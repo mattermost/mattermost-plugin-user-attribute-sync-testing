@@ -13,8 +13,9 @@ const SupportedDocumentVersion = 2
 // FieldSchema is the document's `fields` object: one list of field definitions per object
 // type the plugin syncs.
 type FieldSchema struct {
-	User    []FieldDefinition `json:"user"`
-	Channel []FieldDefinition `json:"channel"`
+	User     []FieldDefinition `json:"user"`
+	Channel  []FieldDefinition `json:"channel"`
+	Template []FieldDefinition `json:"template"`
 }
 
 // AttributesDocument is the uploaded file's shape: a version marker, field definitions, and

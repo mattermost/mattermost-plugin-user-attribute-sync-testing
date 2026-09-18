@@ -115,6 +115,39 @@ func TestParseAttributesDocument_FieldsChannelAndChannels(t *testing.T) {
 	assert.Empty(t, doc.Users)
 }
 
+func TestParseAttributesDocument_FieldsTemplate(t *testing.T) {
+	doc, err := ParseAttributesDocument([]byte(`{"version": 2, "fields": {"template": [
+		{"name": "clearance", "display_name": "Clearance", "type": "multiselect", "options": [{"name": "CUI"}, {"name": "Secret"}]},
+		{"name": "department", "display_name": "Department", "type": "text"}
+	], "user": [
+		{"name": "user_clearance", "display_name": "User Clearance", "type": "multiselect", "template": "clearance"},
+		{"name": "job_title", "display_name": "Job Title", "type": "text"}
+	]}}`))
+
+	require.NoError(t, err)
+	require.Len(t, doc.Fields.Template, 2)
+	assert.Equal(t, "clearance", doc.Fields.Template[0].Name)
+	assert.Equal(t, "Clearance", doc.Fields.Template[0].DisplayName)
+	assert.Equal(t, model.PropertyFieldTypeMultiselect, doc.Fields.Template[0].Type)
+	require.Len(t, doc.Fields.Template[0].Options, 2)
+	assert.Equal(t, "CUI", doc.Fields.Template[0].Options[0].Name)
+	assert.Equal(t, "department", doc.Fields.Template[1].Name)
+
+	require.Len(t, doc.Fields.User, 2)
+	assert.Equal(t, "clearance", doc.Fields.User[0].Template)
+	assert.Empty(t, doc.Fields.User[1].Template)
+}
+
+func TestParseAttributesDocument_FieldsTemplateAbsent(t *testing.T) {
+	doc, err := ParseAttributesDocument([]byte(`{"version": 2, "fields": {"user": [
+		{"name": "job_title", "display_name": "Job Title", "type": "text"}
+	]}}`))
+
+	require.NoError(t, err)
+	assert.Empty(t, doc.Fields.Template)
+	assert.Empty(t, doc.Fields.User[0].Template)
+}
+
 func TestParseAttributesDocument_ChannelKeysAbsent(t *testing.T) {
 	doc, err := ParseAttributesDocument([]byte(`{"version": 2, "users": [{"email": "user1@example.com"}]}`))
 

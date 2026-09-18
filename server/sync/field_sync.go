@@ -65,6 +65,10 @@ type FieldDefinition struct {
 	// user sees their own rank and lower.
 	AccessMode string `json:"access_mode,omitempty"`
 
+	// Template names an entry in the document's fields.template list; empty means
+	// the field is not linked.
+	Template string `json:"template,omitempty"`
+
 	Visibility        string `json:"visibility,omitempty"`
 	PermissionField   string `json:"permission_field,omitempty"`
 	PermissionValues  string `json:"permission_values,omitempty"`
