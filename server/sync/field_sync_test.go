@@ -127,7 +127,7 @@ func TestSyncFields(t *testing.T) {
 		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, defs, summary)
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, defs, nil, summary)
 
 		require.NoError(t, err)
 		require.NotNil(t, cache)
@@ -150,6 +150,124 @@ func TestSyncFields(t *testing.T) {
 		assert.Equal(t, "opt_id_5", cache.GetOptionID("clearance", "Confidential"))
 		assert.Equal(t, "opt_id_6", cache.GetOptionID("clearance", "Secret"))
 		assert.Equal(t, "opt_id_7", cache.GetOptionID("clearance", "Top Secret"))
+		api.AssertExpectations(t)
+	})
+
+	t.Run("creates a field linked to a template with no options of its own", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		// Type, options, and access mode on a linked definition are ignored —
+		// the server copies all three from the template. Visibility still applies.
+		linkedDefs := []FieldDefinition{{
+			Name:        "clearance",
+			DisplayName: "Clearance",
+			Template:    "clearance_levels",
+			Type:        model.PropertyFieldTypeMultiselect,
+			Options: []model.CustomProfileAttributesSelectOption{
+				{Name: "CUI"},
+				{Name: "Secret"},
+			},
+			AccessMode: model.PropertyAccessModeSharedOnly,
+			Visibility: model.PropertyFieldVisibilityHidden,
+		}}
+		templateIDs := map[string]string{"clearance_levels": "template_id_1"}
+
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.Name == "clearance" &&
+				f.LinkedFieldID != nil && *f.LinkedFieldID == "template_id_1" &&
+				f.Attrs[model.PropertyFieldAttributeOptions] == nil &&
+				f.Attrs[model.PropertyAttrsAccessMode] == nil &&
+				f.Attrs[model.PropertyFieldAttrVisibility] == model.PropertyFieldVisibilityHidden
+		})).Return(&model.PropertyField{
+			ID:   "generated_id_1",
+			Name: "clearance",
+			Type: model.PropertyFieldTypeMultiselect,
+			Attrs: model.StringInterface{
+				model.PropertyFieldAttributeOptions: []interface{}{
+					map[string]interface{}{"id": "opt_id_1", "name": "CUI"},
+					map[string]interface{}{"id": "opt_id_2", "name": "Secret"},
+				},
+			},
+		}, nil).Once()
+		mockEmptyFieldSearch(api, groupID)
+
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		summary := &Summary{}
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, linkedDefs, templateIDs, summary)
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, summary.FieldsCreated)
+		assert.Equal(t, 0, summary.FieldsSkipped)
+		assert.Equal(t, "generated_id_1", cache.GetFieldID("clearance"))
+		api.AssertExpectations(t)
+	})
+
+	t.Run("an unlinked field sends no linked_field_id", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		unlinkedDefs := []FieldDefinition{{
+			Name:        "job_title",
+			DisplayName: "Job Title",
+			Type:        model.PropertyFieldTypeText,
+			AccessMode:  model.PropertyAccessModePublic,
+		}}
+
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.Name == "job_title" &&
+				f.LinkedFieldID == nil &&
+				f.Attrs[model.PropertyAttrsAccessMode] == model.PropertyAccessModePublic
+		})).Return(&model.PropertyField{ID: "generated_id_1", Name: "job_title", Type: model.PropertyFieldTypeText}, nil).Once()
+		mockEmptyFieldSearch(api, groupID)
+
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		summary := &Summary{}
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, unlinkedDefs, map[string]string{"clearance_levels": "template_id_1"}, summary)
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, summary.FieldsCreated)
+		assert.Equal(t, "generated_id_1", cache.GetFieldID("job_title"))
+		api.AssertExpectations(t)
+	})
+
+	t.Run("a template name missing from the map skips only that field", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		linkDefs := []FieldDefinition{
+			{
+				Name:        "clearance",
+				DisplayName: "Clearance",
+				Template:    "missing_template",
+			},
+			{
+				Name:        "job_title",
+				DisplayName: "Job Title",
+				Type:        model.PropertyFieldTypeText,
+			},
+		}
+
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.Name == "job_title"
+		})).Return(&model.PropertyField{ID: "generated_id_1", Name: "job_title", Type: model.PropertyFieldTypeText}, nil).Once()
+		mockEmptyFieldSearch(api, groupID)
+
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		summary := &Summary{}
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, linkDefs, map[string]string{"other_template": "template_id_9"}, summary)
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, summary.FieldsCreated)
+		assert.Equal(t, 1, summary.FieldsSkipped)
+		assert.Equal(t, "generated_id_1", cache.GetFieldID("job_title"))
+		assert.Equal(t, "", cache.GetFieldID("clearance"))
 		api.AssertExpectations(t)
 	})
 
@@ -227,7 +345,7 @@ func TestSyncFields(t *testing.T) {
 		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, defs, summary)
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, defs, nil, summary)
 
 		require.NoError(t, err)
 		require.NotNil(t, cache)
@@ -306,7 +424,7 @@ func TestSyncFields(t *testing.T) {
 		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
-		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, defs, &Summary{})
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, defs, nil, &Summary{})
 
 		require.NoError(t, err)
 		assert.True(t, multiSelectOptionsVerified, "Options should be verified during field creation")
@@ -356,7 +474,7 @@ func TestSyncFields(t *testing.T) {
 		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, graphDefs, summary)
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, graphDefs, nil, summary)
 
 		require.NoError(t, err)
 		assert.Equal(t, 1, summary.FieldsCreated)
@@ -423,7 +541,7 @@ func TestSyncFields(t *testing.T) {
 		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		_, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, graphDefs, summary)
+		_, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, graphDefs, nil, summary)
 
 		require.NoError(t, err)
 		assert.Equal(t, 1, summary.FieldsUpdated)
@@ -474,7 +592,7 @@ func TestSyncFields(t *testing.T) {
 		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, graphDefs, summary)
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, graphDefs, nil, summary)
 
 		require.NoError(t, err)
 		assert.Equal(t, 1, summary.FieldsCreated)
@@ -519,7 +637,7 @@ func TestSyncFields(t *testing.T) {
 		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, defs, summary)
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, defs, nil, summary)
 
 		// Should not return error (graceful degradation)
 		require.NoError(t, err)
@@ -544,9 +662,9 @@ func TestSyncFields(t *testing.T) {
 		failing := defs[:1]
 		summary := &Summary{}
 
-		_, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, failing, summary)
+		_, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, failing, nil, summary)
 		require.NoError(t, err)
-		_, err = SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, failing, summary)
+		_, err = SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, failing, nil, summary)
 		require.NoError(t, err)
 
 		assert.Equal(t, 2, summary.FieldsSkipped)
@@ -558,7 +676,7 @@ func TestSyncFields(t *testing.T) {
 		mockEmptyFieldSearch(api, groupID)
 		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
-		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, nil, &Summary{})
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, nil, nil, &Summary{})
 
 		require.NoError(t, err)
 		require.NotNil(t, cache)
@@ -580,7 +698,7 @@ func TestSyncFields(t *testing.T) {
 		api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, defs, summary)
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, defs, nil, summary)
 
 		require.NoError(t, err)
 		require.NotNil(t, cache)
@@ -599,7 +717,7 @@ func TestSyncFields(t *testing.T) {
 		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
-		_, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, nil, &Summary{})
+		_, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, nil, nil, &Summary{})
 
 		require.NoError(t, err)
 		api.AssertNotCalled(t, "DeletePropertyValuesForField", mock.Anything, mock.Anything)

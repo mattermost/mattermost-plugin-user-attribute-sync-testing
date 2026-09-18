@@ -183,6 +183,7 @@ func createField(
 	groupID string,
 	objectType string,
 	def FieldDefinition,
+	linkedFieldID *string,
 ) (*model.PropertyField, error) {
 	client.Log.Info("Field does not exist, creating", "name", def.Name)
 
@@ -214,6 +215,10 @@ func createField(
 		// be empty (the system has no per-entity ID).
 		TargetType: string(model.PropertyFieldTargetLevelSystem),
 
+		// Non-nil only for a field linked to a template; the server then copies
+		// type, options, and access mode from the template.
+		LinkedFieldID: linkedFieldID,
+
 		Attrs: model.StringInterface{
 			// DisplayName is the user-facing label rendered in profile cards and the
 			// System Console. Mattermost's Name field is a CEL identifier and can't
@@ -229,14 +234,19 @@ func createField(
 			// This prevents users and admins from manually editing data that should be
 			// synchronized from an external source. Required for non-public access modes.
 			model.PropertyAttrsProtected: true,
-
-			// See FieldDefinition.AccessMode for details on the three modes.
-			model.PropertyAttrsAccessMode: def.accessMode(),
 		},
 	}
 
+	// A linked field inherits access mode and options from its template: the
+	// server overwrites whatever is sent, and rejects a create that sends
+	// options for a graph-typed template.
+	if linkedFieldID == nil {
+		// See FieldDefinition.AccessMode for details on the three modes.
+		field.Attrs[model.PropertyAttrsAccessMode] = def.accessMode()
+	}
+
 	// Select / Multiselect / Rank fields need their options defined
-	if def.Type.SupportsOptions() {
+	if linkedFieldID == nil && def.Type.SupportsOptions() {
 		// No need to pass in a cache when creating a new field
 		options, err := buildOptionsArr(def, nil)
 		if err != nil {
@@ -294,15 +304,29 @@ func isFieldOwnedByPlugin(
 
 // syncSingleField creates or updates one field. existingField is the lookup
 // result for def.Name, nil when no field of that name and object type exists.
+// templateIDs maps template names to their server-generated field IDs.
 func syncSingleField(
 	client *pluginapi.Client,
 	groupID string,
 	pluginID string,
 	objectType string,
 	def FieldDefinition,
+	templateIDs map[string]string,
 	existingField *model.PropertyField,
 	cache *FieldIDCache,
 ) (string, bool, error) {
+	// A template name the map does not contain fails this field only. Creating
+	// the field unlinked instead would create something the document never
+	// asked for.
+	var linkedFieldID *string
+	if def.Template != "" {
+		id, ok := templateIDs[def.Template]
+		if !ok {
+			return "", false, errors.Errorf("field %s links to unknown template %s", def.Name, def.Template)
+		}
+		linkedFieldID = &id
+	}
+
 	var field *model.PropertyField
 	created := false
 	if existingField != nil {
@@ -334,7 +358,7 @@ func syncSingleField(
 		}
 	} else {
 		var err error
-		field, err = createField(client, groupID, objectType, def)
+		field, err = createField(client, groupID, objectType, def, linkedFieldID)
 		if err != nil {
 			return "", false, err
 		}
@@ -404,7 +428,7 @@ func extractOptionIDs(
 }
 
 //nolint:revive
-func SyncFields(client *pluginapi.Client, groupID, pluginID, objectType string, defs []FieldDefinition, summary *Summary) (*FieldIDCache, error) {
+func SyncFields(client *pluginapi.Client, groupID, pluginID, objectType string, defs []FieldDefinition, templateIDs map[string]string, summary *Summary) (*FieldIDCache, error) {
 	client.Log.Info("Syncing field definitions", "field_count", len(defs))
 
 	cache := NewFieldIDCache()
@@ -430,7 +454,7 @@ func SyncFields(client *pluginapi.Client, groupID, pluginID, objectType string, 
 		}
 
 		for _, def := range defs {
-			_, created, err := syncSingleField(client, groupID, pluginID, objectType, def, existing[def.Name], cache)
+			_, created, err := syncSingleField(client, groupID, pluginID, objectType, def, templateIDs, existing[def.Name], cache)
 			if err != nil {
 				client.Log.Error("Failed to sync field",
 					"name", def.Name,

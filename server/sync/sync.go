@@ -22,7 +22,8 @@ type Summary struct {
 func SyncDocument(client *pluginapi.Client, groupID, pluginID string, doc AttributesDocument) (Summary, error) {
 	var summary Summary
 
-	userCache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, doc.Fields.User, &summary)
+	// No template pass runs yet, so there are no template IDs to link against.
+	userCache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, doc.Fields.User, nil, &summary)
 	if err != nil {
 		return summary, err
 	}
@@ -38,7 +39,7 @@ func SyncDocument(client *pluginapi.Client, groupID, pluginID string, doc Attrib
 			client.Log.Warn("Skipping channel field sync: channel attributes require an Enterprise Advanced license",
 				"field_count", len(doc.Fields.Channel))
 			summary.FieldsSkipped += len(doc.Fields.Channel)
-		} else if channelCache, err = SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeChannel, doc.Fields.Channel, &summary); err != nil {
+		} else if channelCache, err = SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeChannel, doc.Fields.Channel, nil, &summary); err != nil {
 			return summary, err
 		}
 	}
