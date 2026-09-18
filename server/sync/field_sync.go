@@ -530,15 +530,19 @@ func searchGroupFields(client *pluginapi.Client, groupID string, objectTypes []s
 // Values are deleted before the field so the server can authorize the value
 // delete against a live field.
 //
-// The keep-set is keyed by object type and name: a user field and a channel
-// field may share a name, and the document may define one without the other.
-func DeleteOmittedFields(client *pluginapi.Client, groupID, pluginID string, userDefs, channelDefs []FieldDefinition, summary *Summary) {
-	named := make(map[string]struct{}, len(userDefs)+len(channelDefs))
+// The keep-set is keyed by object type and name: a user field, a channel
+// field, and a template may share a name, and the document may define one
+// without the others.
+func DeleteOmittedFields(client *pluginapi.Client, groupID, pluginID string, userDefs, channelDefs, templateDefs []FieldDefinition, summary *Summary) {
+	named := make(map[string]struct{}, len(userDefs)+len(channelDefs)+len(templateDefs))
 	for _, def := range userDefs {
 		named[model.PropertyFieldObjectTypeUser+"|"+def.Name] = struct{}{}
 	}
 	for _, def := range channelDefs {
 		named[model.PropertyFieldObjectTypeChannel+"|"+def.Name] = struct{}{}
+	}
+	for _, def := range templateDefs {
+		named[model.PropertyFieldObjectTypeTemplate+"|"+def.Name] = struct{}{}
 	}
 
 	fields, err := searchGroupFields(client, groupID, nil)

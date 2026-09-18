@@ -163,7 +163,7 @@ func (p *Plugin) handleDeleteAttributes(w http.ResponseWriter, r *http.Request) 
 	}
 
 	summary := sync.Summary{}
-	sync.DeleteOmittedFields(p.client, p.groupID, manifest.Id, nil, nil, &summary)
+	sync.DeleteOmittedFields(p.client, p.groupID, manifest.Id, nil, nil, nil, &summary)
 	p.responseWithJSON(w, http.StatusOK, summary)
 }
 

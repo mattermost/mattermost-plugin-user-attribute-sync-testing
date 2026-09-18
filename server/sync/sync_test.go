@@ -296,6 +296,99 @@ func TestSyncDocument(t *testing.T) {
 		assert.Equal(t, 0, summary.ChannelsSkipped)
 	})
 
+	t.Run("creates a template before the user field that links to it", func(t *testing.T) {
+		client, api := newTestSyncClient(t)
+
+		mockEmptyFieldSearch(api, groupID)
+		mock.InOrder(
+			api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+				return f.Name == "clearance" &&
+					f.ObjectType == model.PropertyFieldObjectTypeTemplate &&
+					f.LinkedFieldID == nil
+			})).Return(&model.PropertyField{
+				ID:   "template_id",
+				Name: "clearance",
+				Type: model.PropertyFieldTypeRank,
+				Attrs: model.StringInterface{
+					model.PropertyFieldAttributeOptions: []interface{}{
+						map[string]interface{}{"id": "opt_id_cui", "name": "CUI", "rank": 1},
+						map[string]interface{}{"id": "opt_id_secret", "name": "Secret", "rank": 3},
+					},
+				},
+			}, nil).Once(),
+			api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+				return f.Name == "clearance" &&
+					f.ObjectType == model.PropertyFieldObjectTypeUser &&
+					f.LinkedFieldID != nil && *f.LinkedFieldID == "template_id"
+			})).Return(&model.PropertyField{ID: "generated_user_id", Name: "clearance"}, nil).Once(),
+		)
+
+		doc := AttributesDocument{
+			Version: SupportedDocumentVersion,
+			Fields: FieldSchema{
+				Template: []FieldDefinition{{
+					Name:        "clearance",
+					DisplayName: "Clearance",
+					Type:        model.PropertyFieldTypeRank,
+					Options: []model.CustomProfileAttributesSelectOption{
+						{Name: "CUI", Rank: model.NewPointer(1)},
+						{Name: "Secret", Rank: model.NewPointer(3)},
+					},
+				}},
+				User: []FieldDefinition{{
+					Name:        "clearance",
+					DisplayName: "Clearance",
+					Template:    "clearance",
+				}},
+			},
+		}
+
+		summary, err := SyncDocument(client, groupID, pluginID, doc)
+		require.NoError(t, err)
+		assert.Equal(t, 2, summary.FieldsCreated)
+		assert.Equal(t, 0, summary.FieldsSkipped)
+	})
+
+	t.Run("creates templates and linked user fields below Enterprise Advanced", func(t *testing.T) {
+		client, api := newTestSyncClient(t)
+
+		api.On("GetLicense").Return(&model.License{SkuShortName: model.LicenseShortSkuEnterprise})
+		mockEmptyFieldSearch(api, groupID)
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.ObjectType == model.PropertyFieldObjectTypeTemplate
+		})).Return(&model.PropertyField{ID: "template_id", Name: "clearance", Type: model.PropertyFieldTypeText}, nil).Once()
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.ObjectType == model.PropertyFieldObjectTypeUser &&
+				f.LinkedFieldID != nil && *f.LinkedFieldID == "template_id"
+		})).Return(&model.PropertyField{ID: "generated_user_id", Name: "clearance"}, nil).Once()
+
+		doc := AttributesDocument{
+			Version: SupportedDocumentVersion,
+			Fields: FieldSchema{
+				Template: []FieldDefinition{{
+					Name:        "clearance",
+					DisplayName: "Clearance",
+					Type:        model.PropertyFieldTypeText,
+				}},
+				User: []FieldDefinition{{
+					Name:        "clearance",
+					DisplayName: "Clearance",
+					Template:    "clearance",
+				}},
+				Channel: []FieldDefinition{{
+					Name:        "department",
+					DisplayName: "Department",
+					Type:        model.PropertyFieldTypeText,
+				}},
+			},
+		}
+
+		summary, err := SyncDocument(client, groupID, pluginID, doc)
+		require.NoError(t, err)
+		assert.Equal(t, 2, summary.FieldsCreated)
+		assert.Equal(t, 1, summary.FieldsSkipped)
+	})
+
 	t.Run("skips channel fields below Enterprise Advanced", func(t *testing.T) {
 		licenses := map[string]*model.License{
 			"no license": nil,
