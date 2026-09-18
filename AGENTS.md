@@ -36,7 +36,7 @@ The plugin has one sync path, `SyncDocument`:
 
 Upload and activation both call `runSync()`, which reads the stored document and runs `SyncDocument` under `syncLock` so two triggers cannot interleave their property-service writes. The System Console setting is the UI for that API: upload stores then syncs and shows the summary; delete is a full reset.
 
-All fields and values are stored in the `access_control` property group (`model.AccessControlPropertyGroupName`), with `ObjectType=user` or `ObjectType=channel` and `TargetType=system`. Living in that group is what makes the fields addressable from ABAC policy expressions.
+All fields and values are stored in the `access_control` property group (`model.AccessControlPropertyGroupName`), with `ObjectType=user`, `ObjectType=channel`, or `ObjectType=template` and `TargetType=system`. Living in that group is what makes the fields addressable from ABAC policy expressions.
 
 ## Key Files and Their Roles
 
