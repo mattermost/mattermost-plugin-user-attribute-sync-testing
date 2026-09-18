@@ -1349,6 +1349,105 @@ func TestDeleteOmittedFields(t *testing.T) {
 		api.AssertNotCalled(t, "DeletePropertyField", groupID, template.ID)
 	})
 
+	t.Run("deletes a linked field before the template it points at", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+		template := &model.PropertyField{
+			ID:         model.NewId(),
+			Name:       "clearance",
+			ObjectType: model.PropertyFieldObjectTypeTemplate,
+			CreateAt:   1,
+			Attrs:      model.StringInterface{model.PropertyAttrsSourcePluginID: pluginID},
+		}
+		userField := &model.PropertyField{
+			ID:         model.NewId(),
+			Name:       "clearance",
+			ObjectType: model.PropertyFieldObjectTypeUser,
+			CreateAt:   2,
+			Attrs:      model.StringInterface{model.PropertyAttrsSourcePluginID: pluginID},
+		}
+		mockDeletionScan(api, template, userField).Once()
+		api.On("DeletePropertyValuesForField", groupID, userField.ID).Return(nil).Once()
+		api.On("DeletePropertyValuesForField", groupID, template.ID).Return(nil).Once()
+		mock.InOrder(
+			api.On("DeletePropertyField", groupID, userField.ID).Return(nil).Once(),
+			api.On("DeletePropertyField", groupID, template.ID).Return(nil).Once(),
+		)
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		summary := &Summary{}
+		DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, summary)
+
+		assert.Equal(t, 2, summary.FieldsDeleted)
+		api.AssertExpectations(t)
+	})
+
+	t.Run("a failed template delete is logged and the pass continues", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+		template := &model.PropertyField{
+			ID:         model.NewId(),
+			Name:       "clearance",
+			ObjectType: model.PropertyFieldObjectTypeTemplate,
+			CreateAt:   1,
+			Attrs:      model.StringInterface{model.PropertyAttrsSourcePluginID: pluginID},
+		}
+		stale := &model.PropertyField{
+			ID:         model.NewId(),
+			Name:       "stale",
+			ObjectType: model.PropertyFieldObjectTypeUser,
+			CreateAt:   2,
+			Attrs:      model.StringInterface{model.PropertyAttrsSourcePluginID: pluginID},
+		}
+		mockDeletionScan(api, template, stale).Once()
+		mock.InOrder(
+			api.On("DeletePropertyValuesForField", groupID, stale.ID).Return(nil).Once(),
+			api.On("DeletePropertyField", groupID, stale.ID).Return(nil).Once(),
+		)
+		api.On("DeletePropertyValuesForField", groupID, template.ID).Return(nil).Once()
+		api.On("DeletePropertyField", groupID, template.ID).Return(errors.New("has_linked_dependents")).Once()
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		summary := &Summary{}
+		DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, summary)
+
+		assert.Equal(t, 1, summary.FieldsDeleted)
+		api.AssertExpectations(t)
+	})
+
+	t.Run("a kept linked field leaves its omitted template undeleted", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+		template := &model.PropertyField{
+			ID:         model.NewId(),
+			Name:       "clearance",
+			ObjectType: model.PropertyFieldObjectTypeTemplate,
+			CreateAt:   1,
+			Attrs:      model.StringInterface{model.PropertyAttrsSourcePluginID: pluginID},
+		}
+		userField := &model.PropertyField{
+			ID:         model.NewId(),
+			Name:       "clearance",
+			ObjectType: model.PropertyFieldObjectTypeUser,
+			CreateAt:   2,
+			Attrs:      model.StringInterface{model.PropertyAttrsSourcePluginID: pluginID},
+		}
+		mockDeletionScan(api, template, userField).Once()
+		api.On("DeletePropertyValuesForField", groupID, template.ID).Return(nil).Once()
+		api.On("DeletePropertyField", groupID, template.ID).Return(errors.New("has_linked_dependents")).Once()
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		summary := &Summary{}
+		DeleteOmittedFields(client, groupID, pluginID, []FieldDefinition{{Name: "clearance"}}, nil, nil, summary)
+
+		assert.Equal(t, 0, summary.FieldsDeleted)
+		api.AssertExpectations(t)
+		api.AssertNotCalled(t, "DeletePropertyValuesForField", groupID, userField.ID)
+		api.AssertNotCalled(t, "DeletePropertyField", groupID, userField.ID)
+	})
+
 	t.Run("pages through search results", func(t *testing.T) {
 		api := &plugintest.API{}
 		client := pluginapi.NewClient(api, &plugintest.Driver{})

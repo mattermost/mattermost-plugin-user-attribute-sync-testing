@@ -566,6 +566,11 @@ func searchGroupFields(client *pluginapi.Client, groupID string, objectTypes []s
 // The keep-set is keyed by object type and name: a user field, a channel
 // field, and a template may share a name, and the document may define one
 // without the others.
+//
+// Non-template fields are deleted before templates: the server refuses to
+// delete a template that still has linked dependents, and only user and
+// channel fields can link to one. A template delete that still fails (a
+// dependent the document keeps) is logged and skipped, leaving both fields.
 func DeleteOmittedFields(client *pluginapi.Client, groupID, pluginID string, userDefs, channelDefs, templateDefs []FieldDefinition, summary *Summary) {
 	named := make(map[string]struct{}, len(userDefs)+len(channelDefs)+len(templateDefs))
 	for _, def := range userDefs {
@@ -584,9 +589,9 @@ func DeleteOmittedFields(client *pluginapi.Client, groupID, pluginID string, use
 		return
 	}
 
-	for _, field := range fields {
+	deleteField := func(field *model.PropertyField) {
 		if _, keep := named[field.ObjectType+"|"+field.Name]; keep {
-			continue
+			return
 		}
 
 		owner := fieldSourcePluginID(field)
@@ -595,7 +600,7 @@ func DeleteOmittedFields(client *pluginapi.Client, groupID, pluginID string, use
 				"field_name", field.Name,
 				"field_id", field.ID,
 				"owner_plugin_id", owner)
-			continue
+			return
 		}
 
 		if err := client.Property.DeletePropertyValuesForField(groupID, field.ID); err != nil {
@@ -603,18 +608,29 @@ func DeleteOmittedFields(client *pluginapi.Client, groupID, pluginID string, use
 				"field_name", field.Name,
 				"field_id", field.ID,
 				"error", err.Error())
-			continue
+			return
 		}
 		if err := client.Property.DeletePropertyField(groupID, field.ID); err != nil {
 			client.Log.Error("Failed to delete omitted field",
 				"field_name", field.Name,
 				"field_id", field.ID,
 				"error", err.Error())
-			continue
+			return
 		}
 		summary.FieldsDeleted++
 		client.Log.Info("Deleted omitted field",
 			"field_name", field.Name,
 			"field_id", field.ID)
+	}
+
+	for _, field := range fields {
+		if field.ObjectType != model.PropertyFieldObjectTypeTemplate {
+			deleteField(field)
+		}
+	}
+	for _, field := range fields {
+		if field.ObjectType == model.PropertyFieldObjectTypeTemplate {
+			deleteField(field)
+		}
 	}
 }
