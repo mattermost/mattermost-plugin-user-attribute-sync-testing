@@ -10,14 +10,16 @@ This repository is a fork of [mattermost-plugin-user-attribute-sync-starter-temp
 
 ## What it creates
 
-The example file `data/attributes.json` defines four attributes. Edit that file (or upload a different document) to change the set.
+The example file `data/attributes.json` defines four user attributes plus a template — five fields. Edit that file (or upload a different document) to change the set.
 
 | Attribute | Type | Access mode | What it exercises |
 |---|---|---|---|
 | `job_title` | text | public | Plugin-managed but readable by everyone |
 | `programs` | multiselect | `shared_only` | Viewers see only the options they share with the target user |
-| `clearance` | rank | `shared_only` | Ordered levels, so policies can say `is at least` |
+| `clearance` | rank | `shared_only` | Ordered levels, so policies can say `is at least` — declared as a template the user attribute links to |
 | `start_date` | date | `source_only` | No one reads it through the API, not even the user themselves |
+
+`clearance` is defined once in `fields.template` and the user attribute carries only a `template` key naming it — see [Link attributes to a template](#link-attributes-to-a-template).
 
 Every attribute this plugin creates is `protected` (not settable in the document — always `true`), which is what makes `source_only` and `shared_only` legal. The example fields use `visibility: always`. `job_title` is public, so everyone can read it — it is still plugin-managed, and still not editable by an admin.
 
@@ -46,7 +48,7 @@ With nothing uploaded, activation does not create or delete attributes — a fir
 
 ## The data file
 
-A JSON document with a `version`, a `fields.user` list, a `users` array, and optionally `fields.channel` and `channels`:
+A JSON document with a `version`, a `fields.user` list, a `users` array, and optionally `fields.template`, `fields.channel`, and `channels`:
 
 ```json
 {
@@ -265,6 +267,50 @@ A field the server refuses is skipped and logged, and the rest of the document s
 
 `data/attributes.json` carries no graph field for the same reason it carries no channel field: the end-to-end tests assert exact field counts against it, and a graph field would create or skip depending on whether the test server has the feature flag on.
 
+### Link attributes to a template
+
+A template is a field definition in a `fields.template` list that user and channel attributes link to by carrying a `template` key naming it. Linked attributes serve the template's option set, so a user attribute and a channel attribute linked to one template share option IDs — which is what lets an ABAC policy compare `user.attributes.classification` against `resource.attributes.classification`:
+
+```json
+{
+  "fields": {
+    "template": [
+      {
+        "name": "classification",
+        "display_name": "Classification",
+        "type": "multiselect",
+        "access_mode": "shared_only",
+        "options": [{"name": "Alpha-1"}, {"name": "Beta-2"}]
+      }
+    ],
+    "channel": [
+      {
+        "name": "classification",
+        "display_name": "Classification",
+        "template": "classification"
+      }
+    ],
+    "user": [
+      {
+        "name": "classification",
+        "display_name": "Classification",
+        "template": "classification"
+      }
+    ]
+  }
+}
+```
+
+The rules that bite:
+
+- On a definition carrying `template`, `type`, `options`, and `access_mode` are ignored — the server copies all three from the template. `visibility` and the `permission_*` keys still apply as declared.
+- The template and the fields linking to it can go in one upload: templates sync before the fields that link to them.
+- Name uniqueness is per object type, so the template, the user attribute, and the channel attribute can all be named `classification`.
+- Templates hold no values. A template name used as a key on a user or channel record is an unknown field, skipped with a warning like any other unknown key.
+- `fields.template` is the full list of templates the plugin owns, like `fields.user` and `fields.channel` are for theirs: an omitted template is deleted. Linked fields are deleted first, because the server refuses to delete a template that still has fields linked to it.
+- A `template` key naming a template the document does not define fails that one field — logged, counted in the summary's skipped-fields number, and the rest of the document still syncs. If that leaves a linked field on the server blocking its template's deletion, that failure is logged too and both fields stay; correct the document or reset the plugin.
+- The Enterprise Advanced gate on channel attributes applies to linked ones too, but templates are created regardless of tier: below that tier a document with templates produces the templates and the linked user attributes, and its channel attributes are skipped.
+
 ### Attribute types cannot change
 
 Mattermost does not allow an attribute's type to change after it is created, and conversions to or from `graph` are refused outright on top of that. To change one, upload a document that omits the field — which deletes it and its values — then upload again with the new type.
@@ -281,6 +327,7 @@ Mattermost does not allow an attribute's type to change after it is created, and
 
 - Users are matched by email address only.
 - When a file changes, every record in it is synced again. There is no per-record diffing.
+- A field's link state cannot be changed in place. Uploading a document that links a previously unlinked field, or unlinks a linked one, makes the plugin delete and recreate the field — its values are lost, and an ABAC policy referencing it breaks until the policy is re-pointed. A field of the same name not owned by this plugin is left alone and counted as skipped.
 
 ## Development
 
