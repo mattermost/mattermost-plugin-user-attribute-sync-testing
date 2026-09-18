@@ -42,7 +42,7 @@ test.describe('attributes upload and download', () => {
         await settings.expectFileOnServer();
         await expect(settings.errorText()).toHaveCount(0);
         await expect(settings.successText()).toBeVisible();
-        await expect(settings.syncSummary()).toContainText('Fields created: 4');
+        await expect(settings.syncSummary()).toContainText('Fields created: 5');
         await expect(settings.syncSummary()).toContainText('Fields updated: 0');
         await expect(settings.syncSummary()).toContainText('Fields deleted: 0');
         await expect(settings.syncSummary()).toContainText('Fields skipped: 0');
@@ -109,7 +109,7 @@ test.describe('attributes upload and download', () => {
         await expect(settings.downloadButton()).toBeDisabled();
         await expect(settings.deleteButton()).toBeDisabled();
         await expect(settings.successText()).toBeVisible();
-        await expect(settings.syncSummary()).toContainText('Fields deleted: 4');
+        await expect(settings.syncSummary()).toContainText('Fields deleted: 5');
     });
 
      test('keeps the stored file when the delete modal is dismissed', async ({page}) => {

@@ -1,6 +1,20 @@
 {
   "version": 2,
   "fields": {
+    "template": [
+      {
+        "name": "clearance",
+        "display_name": "Clearance",
+        "type": "rank",
+        "access_mode": "shared_only",
+        "options": [
+          {"name": "CUI", "rank": 1},
+          {"name": "Confidential", "rank": 2},
+          {"name": "Secret", "rank": 3},
+          {"name": "Top Secret", "rank": 4}
+        ]
+      }
+    ],
     "user": [
       {
         "name": "job_title",
@@ -23,14 +37,7 @@
       {
         "name": "clearance",
         "display_name": "Clearance",
-        "type": "rank",
-        "access_mode": "shared_only",
-        "options": [
-          {"name": "CUI", "rank": 1},
-          {"name": "Confidential", "rank": 2},
-          {"name": "Secret", "rank": 3},
-          {"name": "Top Secret", "rank": 4}
-        ]
+        "template": "clearance"
       },
       {
         "name": "start_date",
