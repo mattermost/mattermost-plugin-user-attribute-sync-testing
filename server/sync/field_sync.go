@@ -348,6 +348,30 @@ func syncSingleField(
 				def.Name)
 		}
 
+		// A link can only be set at create and the server cannot repoint one,
+		// so a link-state change deletes the field (values first) and falls
+		// through to the create path; its values go with it. The server can
+		// unlink in place, but that keeps the template's options instead of the
+		// ones the document declares, so it is not used.
+		wantedLink := ""
+		if linkedFieldID != nil {
+			wantedLink = *linkedFieldID
+		}
+		if existingField.LinkSourceID() != wantedLink {
+			if err := client.Property.DeletePropertyValuesForField(groupID, existingField.ID); err != nil {
+				return "", false, errors.Wrapf(err, "failed to delete values for field %s before recreating it", def.Name)
+			}
+			if err := client.Property.DeletePropertyField(groupID, existingField.ID); err != nil {
+				return "", false, errors.Wrapf(err, "failed to delete field %s before recreating it", def.Name)
+			}
+			client.Log.Info("Deleted field whose link state changed, recreating",
+				"field_id", existingField.ID,
+				"name", def.Name)
+			existingField = nil
+		}
+	}
+
+	if existingField != nil {
 		// The server already assigned IDs to this field's options, and the cache is
 		// empty on every activation. Load them before building the update payload so
 		// buildOptionsArr sends the existing IDs back - otherwise the server mints new

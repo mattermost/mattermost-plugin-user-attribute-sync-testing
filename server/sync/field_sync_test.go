@@ -540,6 +540,276 @@ func TestSyncFields(t *testing.T) {
 		api.AssertExpectations(t)
 	})
 
+	t.Run("an unlinked field whose definition adds a template is recreated linked", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		existing := &model.PropertyField{
+			ID:      "existing_id_1",
+			GroupID: groupID,
+			Name:    "clearance",
+			Type:    model.PropertyFieldTypeRank,
+			Attrs: model.StringInterface{
+				model.PropertyAttrsSourcePluginID: pluginID,
+			},
+		}
+		linkedDefs := []FieldDefinition{{
+			Name:        "clearance",
+			DisplayName: "Clearance",
+			Template:    "clearance_levels",
+		}}
+		templateIDs := map[string]string{"clearance_levels": "template_id_1"}
+
+		mock.InOrder(
+			api.On("DeletePropertyValuesForField", groupID, "existing_id_1").Return(nil).Once(),
+			api.On("DeletePropertyField", groupID, "existing_id_1").Return(nil).Once(),
+		)
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.Name == "clearance" &&
+				f.LinkedFieldID != nil && *f.LinkedFieldID == "template_id_1" &&
+				f.Attrs[model.PropertyFieldAttributeOptions] == nil
+		})).Return(&model.PropertyField{
+			ID:   "generated_id_1",
+			Name: "clearance",
+			Type: model.PropertyFieldTypeRank,
+			Attrs: model.StringInterface{
+				model.PropertyFieldAttributeOptions: []interface{}{
+					map[string]interface{}{"id": "opt_id_cui", "name": "CUI", "rank": 1},
+				},
+			},
+		}, nil).Once()
+		mockFieldLookup(api, groupID, existing)
+
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		summary := &Summary{}
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, linkedDefs, templateIDs, summary)
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, summary.FieldsCreated)
+		assert.Equal(t, 0, summary.FieldsUpdated)
+		assert.Equal(t, 0, summary.FieldsSkipped)
+		assert.Equal(t, "generated_id_1", cache.GetFieldID("clearance"))
+		api.AssertExpectations(t)
+		api.AssertNotCalled(t, "UpdatePropertyField", mock.Anything, mock.Anything)
+	})
+
+	t.Run("a linked field whose definition drops the template is recreated unlinked", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		existing := &model.PropertyField{
+			ID:            "existing_id_1",
+			GroupID:       groupID,
+			Name:          "programs",
+			Type:          model.PropertyFieldTypeMultiselect,
+			LinkedFieldID: model.NewPointer("template_id_1"),
+			Attrs: model.StringInterface{
+				model.PropertyAttrsSourcePluginID: pluginID,
+			},
+		}
+		unlinkedDefs := []FieldDefinition{{
+			Name:        "programs",
+			DisplayName: "Programs",
+			Type:        model.PropertyFieldTypeMultiselect,
+			Options: []model.CustomProfileAttributesSelectOption{
+				{Name: "Apples"},
+				{Name: "Oranges"},
+			},
+		}}
+
+		mock.InOrder(
+			api.On("DeletePropertyValuesForField", groupID, "existing_id_1").Return(nil).Once(),
+			api.On("DeletePropertyField", groupID, "existing_id_1").Return(nil).Once(),
+		)
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			options, ok := f.Attrs[model.PropertyFieldAttributeOptions].([]interface{})
+			return f.Name == "programs" &&
+				f.LinkedFieldID == nil &&
+				f.Type == model.PropertyFieldTypeMultiselect &&
+				ok && len(options) == 2
+		})).Return(&model.PropertyField{
+			ID:   "generated_id_1",
+			Name: "programs",
+			Type: model.PropertyFieldTypeMultiselect,
+			Attrs: model.StringInterface{
+				model.PropertyFieldAttributeOptions: []interface{}{
+					map[string]interface{}{"id": "opt_id_1", "name": "Apples"},
+					map[string]interface{}{"id": "opt_id_2", "name": "Oranges"},
+				},
+			},
+		}, nil).Once()
+		mockFieldLookup(api, groupID, existing)
+
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		summary := &Summary{}
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, unlinkedDefs, nil, summary)
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, summary.FieldsCreated)
+		assert.Equal(t, 0, summary.FieldsUpdated)
+		assert.Equal(t, 0, summary.FieldsSkipped)
+		assert.Equal(t, "generated_id_1", cache.GetFieldID("programs"))
+		assert.Equal(t, "opt_id_1", cache.GetOptionID("programs", "Apples"))
+		api.AssertExpectations(t)
+		api.AssertNotCalled(t, "UpdatePropertyField", mock.Anything, mock.Anything)
+	})
+
+	t.Run("a field linked to another template is recreated pointing at the new one", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		existing := &model.PropertyField{
+			ID:            "existing_id_1",
+			GroupID:       groupID,
+			Name:          "clearance",
+			Type:          model.PropertyFieldTypeRank,
+			LinkedFieldID: model.NewPointer("template_id_1"),
+			Attrs: model.StringInterface{
+				model.PropertyAttrsSourcePluginID: pluginID,
+			},
+		}
+		linkedDefs := []FieldDefinition{{
+			Name:        "clearance",
+			DisplayName: "Clearance",
+			Template:    "other_levels",
+		}}
+		templateIDs := map[string]string{"other_levels": "template_id_2"}
+
+		mock.InOrder(
+			api.On("DeletePropertyValuesForField", groupID, "existing_id_1").Return(nil).Once(),
+			api.On("DeletePropertyField", groupID, "existing_id_1").Return(nil).Once(),
+		)
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.Name == "clearance" &&
+				f.LinkedFieldID != nil && *f.LinkedFieldID == "template_id_2"
+		})).Return(&model.PropertyField{
+			ID:   "generated_id_1",
+			Name: "clearance",
+			Type: model.PropertyFieldTypeRank,
+			Attrs: model.StringInterface{
+				model.PropertyFieldAttributeOptions: []interface{}{
+					map[string]interface{}{"id": "opt_id_cui", "name": "CUI", "rank": 1},
+				},
+			},
+		}, nil).Once()
+		mockFieldLookup(api, groupID, existing)
+
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		summary := &Summary{}
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, linkedDefs, templateIDs, summary)
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, summary.FieldsCreated)
+		assert.Equal(t, 0, summary.FieldsSkipped)
+		assert.Equal(t, "generated_id_1", cache.GetFieldID("clearance"))
+		api.AssertExpectations(t)
+		api.AssertNotCalled(t, "UpdatePropertyField", mock.Anything, mock.Anything)
+	})
+
+	t.Run("a field linked to the same template is updated, not recreated", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		existing := &model.PropertyField{
+			ID:            "existing_id_1",
+			GroupID:       groupID,
+			Name:          "clearance",
+			Type:          model.PropertyFieldTypeRank,
+			LinkedFieldID: model.NewPointer("template_id_1"),
+			Attrs: model.StringInterface{
+				model.PropertyAttrsSourcePluginID: pluginID,
+				model.PropertyFieldAttributeOptions: []interface{}{
+					map[string]interface{}{"id": "opt_id_cui", "name": "CUI", "rank": 1},
+				},
+			},
+		}
+		linkedDefs := []FieldDefinition{{
+			Name:        "clearance",
+			DisplayName: "Clearance",
+			Template:    "clearance_levels",
+		}}
+		templateIDs := map[string]string{"clearance_levels": "template_id_1"}
+
+		api.On("UpdatePropertyField", groupID, mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.ID == "existing_id_1"
+		})).Return(existing, nil).Once()
+		mockFieldLookup(api, groupID, existing)
+
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		summary := &Summary{}
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, linkedDefs, templateIDs, summary)
+
+		require.NoError(t, err)
+		assert.Equal(t, 0, summary.FieldsCreated)
+		assert.Equal(t, 1, summary.FieldsUpdated)
+		assert.Equal(t, 0, summary.FieldsSkipped)
+		assert.Equal(t, "existing_id_1", cache.GetFieldID("clearance"))
+		api.AssertExpectations(t)
+		api.AssertNotCalled(t, "DeletePropertyValuesForField", mock.Anything, mock.Anything)
+		api.AssertNotCalled(t, "DeletePropertyField", mock.Anything, mock.Anything)
+	})
+
+	t.Run("a failed delete before recreate skips that field only", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		existing := &model.PropertyField{
+			ID:      "existing_id_1",
+			GroupID: groupID,
+			Name:    "clearance",
+			Type:    model.PropertyFieldTypeRank,
+			Attrs: model.StringInterface{
+				model.PropertyAttrsSourcePluginID: pluginID,
+			},
+		}
+		mixedDefs := []FieldDefinition{
+			{
+				Name:        "clearance",
+				DisplayName: "Clearance",
+				Template:    "clearance_levels",
+			},
+			{
+				Name:        "job_title",
+				DisplayName: "Job Title",
+				Type:        model.PropertyFieldTypeText,
+			},
+		}
+		templateIDs := map[string]string{"clearance_levels": "template_id_1"}
+
+		api.On("DeletePropertyValuesForField", groupID, "existing_id_1").Return(nil).Once()
+		api.On("DeletePropertyField", groupID, "existing_id_1").Return(errors.New("delete failed")).Once()
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.Name == "job_title"
+		})).Return(&model.PropertyField{ID: "generated_id_1", Name: "job_title", Type: model.PropertyFieldTypeText}, nil).Once()
+		mockFieldLookup(api, groupID, existing)
+
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		summary := &Summary{}
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, mixedDefs, templateIDs, summary)
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, summary.FieldsCreated)
+		assert.Equal(t, 1, summary.FieldsSkipped)
+		assert.Equal(t, "generated_id_1", cache.GetFieldID("job_title"))
+		assert.Equal(t, "", cache.GetFieldID("clearance"))
+		api.AssertExpectations(t)
+	})
+
 	t.Run("multiselect & rank fields include options", func(t *testing.T) {
 		api := &plugintest.API{}
 		client := pluginapi.NewClient(api, &plugintest.Driver{})
