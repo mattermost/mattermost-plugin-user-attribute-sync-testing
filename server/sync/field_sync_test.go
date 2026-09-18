@@ -360,6 +360,65 @@ func TestSyncFields(t *testing.T) {
 		api.AssertExpectations(t)
 	})
 
+	t.Run("updating a linked field leaves type, options, and access mode alone", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		existingOptions := []interface{}{
+			map[string]interface{}{"id": "opt_id_1", "name": "CUI", "rank": 1},
+			map[string]interface{}{"id": "opt_id_2", "name": "Secret", "rank": 2},
+		}
+		existingClearance := &model.PropertyField{
+			ID:            "existing_id_1",
+			GroupID:       groupID,
+			Name:          "clearance",
+			Type:          model.PropertyFieldTypeRank,
+			LinkedFieldID: model.NewPointer("template_id_1"),
+			Attrs: model.StringInterface{
+				model.PropertyAttrsSourcePluginID:   pluginID,
+				model.PropertyAttrsAccessMode:       model.PropertyAccessModeSharedOnly,
+				model.PropertyFieldAttributeOptions: existingOptions,
+			},
+		}
+		// The definition's type and options are ignored; display name,
+		// visibility, and permission levels still come from the document.
+		linkedDefs := []FieldDefinition{{
+			Name:             "clearance",
+			DisplayName:      "Clearance Level",
+			Template:         "clearance_levels",
+			Type:             model.PropertyFieldTypeMultiselect,
+			Visibility:       model.PropertyFieldVisibilityHidden,
+			PermissionValues: string(model.PermissionLevelNone),
+		}}
+		templateIDs := map[string]string{"clearance_levels": "template_id_1"}
+
+		api.On("UpdatePropertyField", groupID, mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.ID == "existing_id_1" &&
+				f.Type == model.PropertyFieldTypeRank &&
+				f.LinkedFieldID != nil && *f.LinkedFieldID == "template_id_1" &&
+				f.Attrs[model.PropertyAttrsAccessMode] == model.PropertyAccessModeSharedOnly &&
+				assert.ObjectsAreEqual(existingOptions, f.Attrs[model.PropertyFieldAttributeOptions]) &&
+				f.Attrs[model.PropertyFieldAttrDisplayName] == "Clearance Level" &&
+				f.Attrs[model.PropertyFieldAttrVisibility] == model.PropertyFieldVisibilityHidden &&
+				f.PermissionValues != nil && *f.PermissionValues == model.PermissionLevelNone
+		})).Return(existingClearance, nil).Once()
+		mockFieldLookup(api, groupID, existingClearance)
+		mockEmptyFieldSearch(api, groupID)
+
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		summary := &Summary{}
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, linkedDefs, templateIDs, summary)
+
+		require.NoError(t, err)
+		assert.Equal(t, 0, summary.FieldsCreated)
+		assert.Equal(t, 1, summary.FieldsUpdated)
+		assert.Equal(t, 0, summary.FieldsSkipped)
+		assert.Equal(t, "existing_id_1", cache.GetFieldID("clearance"))
+		api.AssertExpectations(t)
+	})
+
 	t.Run("multiselect & rank fields include options", func(t *testing.T) {
 		api := &plugintest.API{}
 		client := pluginapi.NewClient(api, &plugintest.Driver{})

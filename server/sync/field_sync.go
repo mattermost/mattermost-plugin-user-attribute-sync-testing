@@ -120,17 +120,27 @@ func updateField(
 		"field_id", existingField.ID,
 		"name", def.Name)
 
-	existingField.Type = def.Type
+	// A linked field's type, options, and access mode belong to its template:
+	// the server rejects an update that changes them, and a linked definition
+	// declares none, so writing them would send empty values read as changes.
+	// LinkedFieldID is likewise left as the server returned it — a link can
+	// only be set at create.
+	linked := def.Template != ""
+	if !linked {
+		existingField.Type = def.Type
+	}
 	existingField.Attrs[model.PropertyFieldAttrVisibility] = def.visibility()
 	existingField.Attrs[model.PropertyFieldAttrDisplayName] = def.DisplayName
 	existingField.Attrs[model.PropertyAttrsProtected] = true
-	existingField.Attrs[model.PropertyAttrsAccessMode] = def.accessMode()
+	if !linked {
+		existingField.Attrs[model.PropertyAttrsAccessMode] = def.accessMode()
+	}
 	// See createField for why the permission-level default is sysadmin.
 	existingField.PermissionField = def.permissionField()
 	existingField.PermissionValues = def.permissionValues()
 	existingField.PermissionOptions = def.permissionOptions()
 
-	if def.Type.SupportsOptions() {
+	if !linked && def.Type.SupportsOptions() {
 		options, err := buildOptionsArr(def, cache)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to update existing field %s", def.Name)
