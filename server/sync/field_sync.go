@@ -380,8 +380,7 @@ func syncSingleField(
 	cache.FieldNameToID[def.Name] = field.ID
 	// The type comes from the server-returned field, not the definition: a
 	// linked definition declares none, and the returned field carries the
-	// template's. Value sync reads it to tell a rank/select string (write the
-	// option ID) from text or date (write the string).
+	// template's.
 	cache.FieldNameToType[def.Name] = field.Type
 
 	// A linked field's options are the template's, copied onto the returned
