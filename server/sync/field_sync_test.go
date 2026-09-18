@@ -205,6 +205,127 @@ func TestSyncFields(t *testing.T) {
 		api.AssertExpectations(t)
 	})
 
+	t.Run("a linked field caches the template's type and option IDs from the created field", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		linkedDefs := []FieldDefinition{{
+			Name:        "clearance",
+			DisplayName: "Clearance",
+			Template:    "clearance_levels",
+		}}
+		templateIDs := map[string]string{"clearance_levels": "template_id_1"}
+
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.Name == "clearance" &&
+				f.LinkedFieldID != nil && *f.LinkedFieldID == "template_id_1"
+		})).Return(&model.PropertyField{
+			ID:   "generated_id_1",
+			Name: "clearance",
+			Type: model.PropertyFieldTypeRank,
+			Attrs: model.StringInterface{
+				model.PropertyFieldAttributeOptions: []interface{}{
+					map[string]interface{}{"id": "opt_id_cui", "name": "CUI", "rank": 1},
+					map[string]interface{}{"id": "opt_id_secret", "name": "Secret", "rank": 3},
+				},
+			},
+		}, nil).Once()
+		mockEmptyFieldSearch(api, groupID)
+
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		summary := &Summary{}
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, linkedDefs, templateIDs, summary)
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, summary.FieldsCreated)
+		assert.Equal(t, 0, summary.FieldsSkipped)
+		assert.Equal(t, model.PropertyFieldTypeRank, cache.GetFieldType("clearance"))
+		assert.Equal(t, "opt_id_cui", cache.GetOptionID("clearance", "CUI"))
+		assert.Equal(t, "opt_id_secret", cache.GetOptionID("clearance", "Secret"))
+		api.AssertExpectations(t)
+	})
+
+	t.Run("a linked field caches the template's type and option IDs from the updated field", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		// The server hydrates a linked field with the template's options on
+		// every read, so the field the lookup finds already carries them.
+		existing := &model.PropertyField{
+			ID:            "existing_id_1",
+			GroupID:       groupID,
+			Name:          "clearance",
+			Type:          model.PropertyFieldTypeRank,
+			LinkedFieldID: model.NewPointer("template_id_1"),
+			Attrs: model.StringInterface{
+				model.PropertyAttrsSourcePluginID: pluginID,
+				model.PropertyFieldAttributeOptions: []interface{}{
+					map[string]interface{}{"id": "opt_id_cui", "name": "CUI", "rank": 1},
+					map[string]interface{}{"id": "opt_id_secret", "name": "Secret", "rank": 3},
+				},
+			},
+		}
+		linkedDefs := []FieldDefinition{{
+			Name:        "clearance",
+			DisplayName: "Clearance",
+			Template:    "clearance_levels",
+		}}
+		templateIDs := map[string]string{"clearance_levels": "template_id_1"}
+
+		api.On("UpdatePropertyField", groupID, mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.ID == "existing_id_1"
+		})).Return(existing, nil).Once()
+		mockFieldLookup(api, groupID, existing)
+		mockEmptyFieldSearch(api, groupID)
+
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		summary := &Summary{}
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, linkedDefs, templateIDs, summary)
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, summary.FieldsUpdated)
+		assert.Equal(t, 0, summary.FieldsSkipped)
+		assert.Equal(t, model.PropertyFieldTypeRank, cache.GetFieldType("clearance"))
+		assert.Equal(t, "opt_id_cui", cache.GetOptionID("clearance", "CUI"))
+		assert.Equal(t, "opt_id_secret", cache.GetOptionID("clearance", "Secret"))
+		api.AssertExpectations(t)
+	})
+
+	t.Run("an unlinked field declaring no options caches its type without reading options", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		selectDefs := []FieldDefinition{{
+			Name:        "department",
+			DisplayName: "Department",
+			Type:        model.PropertyFieldTypeSelect,
+		}}
+
+		// The returned field carries no options attribute; reading it would
+		// error, so LogError is deliberately unmocked — an extraction attempt
+		// fails the test.
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.Name == "department"
+		})).Return(&model.PropertyField{ID: "generated_id_1", Name: "department", Type: model.PropertyFieldTypeSelect}, nil).Once()
+		mockEmptyFieldSearch(api, groupID)
+
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		summary := &Summary{}
+		cache, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, selectDefs, nil, summary)
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, summary.FieldsCreated)
+		assert.Equal(t, 0, summary.FieldsSkipped)
+		assert.Equal(t, model.PropertyFieldTypeSelect, cache.GetFieldType("department"))
+		api.AssertExpectations(t)
+	})
+
 	t.Run("an unlinked field sends no linked_field_id", func(t *testing.T) {
 		api := &plugintest.API{}
 		client := pluginapi.NewClient(api, &plugintest.Driver{})

@@ -349,6 +349,182 @@ func TestSyncDocument(t *testing.T) {
 		assert.Equal(t, 0, summary.FieldsSkipped)
 	})
 
+	t.Run("writes the template's option ID for user and channel values on linked fields", func(t *testing.T) {
+		client, api := newTestSyncClient(t)
+
+		api.On("GetLicense").Return(&model.License{SkuShortName: model.LicenseShortSkuEnterpriseAdvanced})
+		mockEmptyFieldSearch(api, groupID)
+
+		templateOptions := []interface{}{
+			map[string]interface{}{"id": "opt_id_cui", "name": "CUI", "rank": 1},
+			map[string]interface{}{"id": "opt_id_secret", "name": "Secret", "rank": 3},
+		}
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.ObjectType == model.PropertyFieldObjectTypeTemplate && f.Name == "clearance_levels"
+		})).Return(&model.PropertyField{
+			ID:   "template_id",
+			Name: "clearance_levels",
+			Type: model.PropertyFieldTypeRank,
+			Attrs: model.StringInterface{
+				model.PropertyFieldAttributeOptions: templateOptions,
+			},
+		}, nil).Once()
+		// The server copies the template's type and options onto each linked
+		// field it creates.
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.ObjectType == model.PropertyFieldObjectTypeUser &&
+				f.LinkedFieldID != nil && *f.LinkedFieldID == "template_id"
+		})).Return(&model.PropertyField{
+			ID:   "user_field_id",
+			Name: "clearance",
+			Type: model.PropertyFieldTypeRank,
+			Attrs: model.StringInterface{
+				model.PropertyFieldAttributeOptions: templateOptions,
+			},
+		}, nil).Once()
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.ObjectType == model.PropertyFieldObjectTypeChannel &&
+				f.LinkedFieldID != nil && *f.LinkedFieldID == "template_id"
+		})).Return(&model.PropertyField{
+			ID:   "channel_field_id",
+			Name: "clearance",
+			Type: model.PropertyFieldTypeRank,
+			Attrs: model.StringInterface{
+				model.PropertyFieldAttributeOptions: templateOptions,
+			},
+		}, nil).Once()
+
+		user := &model.User{Id: "user1", Email: "user1@example.com"}
+		api.On("GetUserByEmail", "user1@example.com").Return(user, nil)
+		channel := &model.Channel{Id: "channel1", Name: "town-square"}
+		api.On("GetChannelByNameForTeamName", "ad-1", "town-square", false).Return(channel, nil)
+
+		// Both values are the rank string "Secret"; both must write the
+		// template's option ID for it.
+		secretValue, err := json.Marshal("opt_id_secret")
+		require.NoError(t, err)
+		api.On("UpsertPropertyValues", mock.MatchedBy(func(values []*model.PropertyValue) bool {
+			return len(values) == 1 &&
+				values[0].FieldID == "user_field_id" &&
+				values[0].TargetID == "user1" &&
+				assert.ObjectsAreEqual(json.RawMessage(secretValue), values[0].Value)
+		})).Return([]*model.PropertyValue{}, nil).Once()
+		api.On("UpsertPropertyValues", mock.MatchedBy(func(values []*model.PropertyValue) bool {
+			return len(values) == 1 &&
+				values[0].FieldID == "channel_field_id" &&
+				values[0].TargetID == "channel1" &&
+				assert.ObjectsAreEqual(json.RawMessage(secretValue), values[0].Value)
+		})).Return([]*model.PropertyValue{}, nil).Once()
+
+		doc := AttributesDocument{
+			Version: SupportedDocumentVersion,
+			Fields: FieldSchema{
+				Template: []FieldDefinition{{
+					Name:        "clearance_levels",
+					DisplayName: "Clearance Levels",
+					Type:        model.PropertyFieldTypeRank,
+					Options: []model.CustomProfileAttributesSelectOption{
+						{Name: "CUI", Rank: model.NewPointer(1)},
+						{Name: "Secret", Rank: model.NewPointer(3)},
+					},
+				}},
+				User: []FieldDefinition{{
+					Name:        "clearance",
+					DisplayName: "Clearance",
+					Template:    "clearance_levels",
+				}},
+				Channel: []FieldDefinition{{
+					Name:        "clearance",
+					DisplayName: "Clearance",
+					Template:    "clearance_levels",
+				}},
+			},
+			Users: []map[string]interface{}{
+				{"email": "user1@example.com", "clearance": "Secret"},
+			},
+			Channels: []map[string]interface{}{
+				{"team": "ad-1", "channel": "town-square", "clearance": "Secret"},
+			},
+		}
+
+		summary, err := SyncDocument(client, groupID, pluginID, doc)
+		require.NoError(t, err)
+		assert.Equal(t, 3, summary.FieldsCreated)
+		assert.Equal(t, 0, summary.FieldsSkipped)
+		assert.Equal(t, 1, summary.UsersSynced)
+		assert.Equal(t, 0, summary.UsersSkipped)
+		assert.Equal(t, 1, summary.ChannelsSynced)
+		assert.Equal(t, 0, summary.ChannelsSkipped)
+	})
+
+	t.Run("a value naming the template is skipped as an unknown field", func(t *testing.T) {
+		client, api := newTestSyncClient(t)
+
+		mockEmptyFieldSearch(api, groupID)
+		templateOptions := []interface{}{
+			map[string]interface{}{"id": "opt_id_cui", "name": "CUI", "rank": 1},
+			map[string]interface{}{"id": "opt_id_secret", "name": "Secret", "rank": 3},
+		}
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.ObjectType == model.PropertyFieldObjectTypeTemplate
+		})).Return(&model.PropertyField{
+			ID:   "template_id",
+			Name: "clearance_levels",
+			Type: model.PropertyFieldTypeRank,
+			Attrs: model.StringInterface{
+				model.PropertyFieldAttributeOptions: templateOptions,
+			},
+		}, nil).Once()
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.ObjectType == model.PropertyFieldObjectTypeUser &&
+				f.LinkedFieldID != nil && *f.LinkedFieldID == "template_id"
+		})).Return(&model.PropertyField{
+			ID:   "user_field_id",
+			Name: "clearance",
+			Type: model.PropertyFieldTypeRank,
+			Attrs: model.StringInterface{
+				model.PropertyFieldAttributeOptions: templateOptions,
+			},
+		}, nil).Once()
+
+		user := &model.User{Id: "user1", Email: "user1@example.com"}
+		api.On("GetUserByEmail", "user1@example.com").Return(user, nil)
+		// Templates hold no values: the record's "clearance_levels" entry is
+		// skipped, and only the linked field's value is written.
+		api.On("UpsertPropertyValues", mock.MatchedBy(func(values []*model.PropertyValue) bool {
+			return len(values) == 1 && values[0].FieldID == "user_field_id"
+		})).Return([]*model.PropertyValue{}, nil).Once()
+
+		doc := AttributesDocument{
+			Version: SupportedDocumentVersion,
+			Fields: FieldSchema{
+				Template: []FieldDefinition{{
+					Name:        "clearance_levels",
+					DisplayName: "Clearance Levels",
+					Type:        model.PropertyFieldTypeRank,
+					Options: []model.CustomProfileAttributesSelectOption{
+						{Name: "CUI", Rank: model.NewPointer(1)},
+						{Name: "Secret", Rank: model.NewPointer(3)},
+					},
+				}},
+				User: []FieldDefinition{{
+					Name:        "clearance",
+					DisplayName: "Clearance",
+					Template:    "clearance_levels",
+				}},
+			},
+			Users: []map[string]interface{}{
+				{"email": "user1@example.com", "clearance": "Secret", "clearance_levels": "Secret"},
+			},
+		}
+
+		summary, err := SyncDocument(client, groupID, pluginID, doc)
+		require.NoError(t, err)
+		assert.Equal(t, 2, summary.FieldsCreated)
+		assert.Equal(t, 1, summary.UsersSynced)
+		assert.Equal(t, 0, summary.UsersSkipped)
+	})
+
 	t.Run("creates templates and linked user fields below Enterprise Advanced", func(t *testing.T) {
 		client, api := newTestSyncClient(t)
 

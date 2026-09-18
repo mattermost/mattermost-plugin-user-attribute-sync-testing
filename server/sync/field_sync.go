@@ -17,8 +17,10 @@ type FieldIDCache struct {
 	// Maps option names (e.g., "Apples") to Mattermost option IDs for all select/multiselect/rank fields
 	// Option names are prefixed with field names to avoid name collision.
 	OptionNameToID map[string]string
-	// Maps external field names to the type declared in the document, so value sync can tell
-	// a rank/select string (write the option ID) from text or date (write the string).
+	// Maps external field names to the type the server returned for the field —
+	// the declared type for an unlinked field, the template's for a linked one —
+	// so value sync can tell a rank/select string (write the option ID) from
+	// text or date (write the string).
 	FieldNameToType map[string]model.PropertyFieldType
 }
 
@@ -376,8 +378,17 @@ func syncSingleField(
 	}
 
 	cache.FieldNameToID[def.Name] = field.ID
+	// The type comes from the server-returned field, not the definition: a
+	// linked definition declares none, and the returned field carries the
+	// template's. Value sync reads it to tell a rank/select string (write the
+	// option ID) from text or date (write the string).
+	cache.FieldNameToType[def.Name] = field.Type
 
-	if def.Type.SupportsOptions() && len(def.Options) > 0 {
+	// A linked field's options are the template's, copied onto the returned
+	// field by the server — so extract from it whenever the field can carry
+	// options, not only when the definition declared some. An unlinked field
+	// declaring no options has no options attribute to read.
+	if field.Type.SupportsOptions() && (def.Template != "" || len(def.Options) > 0) {
 		if err := extractOptionIDs(client, field, def, cache); err != nil {
 			client.Log.Error("Failed to extract option IDs",
 				"name", def.Name,
@@ -477,7 +488,6 @@ func SyncFields(client *pluginapi.Client, groupID, pluginID, objectType string, 
 			} else {
 				summary.FieldsUpdated++
 			}
-			cache.FieldNameToType[def.Name] = def.Type
 		}
 	}
 
