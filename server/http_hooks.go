@@ -91,7 +91,12 @@ func (p *Plugin) handleUploadAttributes(w http.ResponseWriter, r *http.Request) 
 	// uploaded. The timestamp is stored together with the file to ensure they are in sync.
 	// Note KV.Set reports failure two ways: an error, or set == false meaning the write did not
 	// happen.
+	//
+	// The lock covers the store as well as the sync, so a delete or another upload cannot land
+	// between them and leave the stored document disagreeing with the server's fields.
 	uploadedAt := time.Now()
+	p.syncLock.Lock()
+	defer p.syncLock.Unlock()
 	set, err := p.client.KV.Set(sync.AttributesStoreKey, sync.StoredAttributes{LastUpdated: uploadedAt, Data: raw})
 	if err != nil {
 		p.client.Log.Error("failed to upload attributes document", "err", err)
@@ -104,9 +109,7 @@ func (p *Plugin) handleUploadAttributes(w http.ResponseWriter, r *http.Request) 
 
 	// Sync the parsed body, not a KV re-read: plugin KV Get hits the replica, Set the
 	// master, so a read-your-writes here can miss and look like an empty store.
-	p.syncLock.Lock()
 	summary, err := sync.SyncDocument(p.client, p.groupID, manifest.Id, doc)
-	p.syncLock.Unlock()
 	if err != nil {
 		p.client.Log.Error("stored attributes document but sync failed", "err", err)
 		p.errorWithJSON(w, http.StatusInternalServerError,
@@ -168,7 +171,12 @@ func (p *Plugin) handleDeleteAttributes(w http.ResponseWriter, r *http.Request) 
 	}
 
 	summary := sync.Summary{}
-	sync.DeleteOmittedFields(p.client, p.groupID, manifest.Id, nil, nil, nil, &summary)
+	if err := sync.DeleteOmittedFields(p.client, p.groupID, manifest.Id, nil, nil, nil, &summary); err != nil {
+		p.client.Log.Error("deleted attributes document but field removal failed", "err", err)
+		p.errorWithJSON(w, http.StatusInternalServerError,
+			fmt.Sprintf("document deleted but attribute removal failed: %s", err))
+		return
+	}
 	p.responseWithJSON(w, http.StatusOK, summary)
 }
 

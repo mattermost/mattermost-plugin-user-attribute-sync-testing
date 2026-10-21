@@ -228,6 +228,38 @@ func TestSyncDocument(t *testing.T) {
 		assert.Equal(t, 1, summary.FieldsDeleted)
 	})
 
+	t.Run("a failed deletion scan still syncs the document", func(t *testing.T) {
+		client, api := newTestSyncClient(t)
+
+		api.On("SearchPropertyFields", groupID, mock.MatchedBy(func(opts model.PropertyFieldSearchOpts) bool {
+			return len(opts.ObjectTypes) == 1 && opts.ObjectTypes[0] == model.PropertyFieldObjectTypeUser
+		})).Return([]*model.PropertyField{}, nil)
+		api.On("SearchPropertyFields", groupID, mock.MatchedBy(func(opts model.PropertyFieldSearchOpts) bool {
+			return len(opts.ObjectTypes) == 0
+		})).Return(nil, errors.New("search failed")).Once()
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.Name == "job_title"
+		})).Return(&model.PropertyField{ID: "generated_id_1", Name: "job_title", Type: model.PropertyFieldTypeText}, nil)
+
+		doc := AttributesDocument{
+			Version: SupportedDocumentVersion,
+			Fields: FieldSchema{
+				User: []FieldDefinition{{
+					Name:        "job_title",
+					DisplayName: "Job Title",
+					Type:        model.PropertyFieldTypeText,
+					AccessMode:  model.PropertyAccessModePublic,
+				}},
+			},
+		}
+
+		summary, err := SyncDocument(client, groupID, pluginID, doc)
+		require.NoError(t, err)
+		assert.Equal(t, 1, summary.FieldsCreated)
+		assert.Equal(t, 0, summary.FieldsDeleted)
+		api.AssertNotCalled(t, "DeletePropertyField", mock.Anything, mock.Anything)
+	})
+
 	t.Run("creates channel fields with an Enterprise Advanced license", func(t *testing.T) {
 		client, api := newTestSyncClient(t)
 

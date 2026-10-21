@@ -582,7 +582,10 @@ func searchGroupFields(client *pluginapi.Client, groupID string, objectTypes []s
 // delete a template that still has linked dependents, and only user and
 // channel fields can link to one. A template delete that still fails (a
 // dependent the document keeps) is logged and skipped, leaving both fields.
-func DeleteOmittedFields(client *pluginapi.Client, groupID, pluginID string, userDefs, channelDefs, templateDefs []FieldDefinition, summary *Summary) {
+//
+// Only a failed field search is returned as an error, since nothing can be
+// deleted without it; per-field delete failures are logged and skipped.
+func DeleteOmittedFields(client *pluginapi.Client, groupID, pluginID string, userDefs, channelDefs, templateDefs []FieldDefinition, summary *Summary) error {
 	named := make(map[string]struct{}, len(userDefs)+len(channelDefs)+len(templateDefs))
 	for _, def := range userDefs {
 		named[model.PropertyFieldObjectTypeUser+"|"+def.Name] = struct{}{}
@@ -596,8 +599,7 @@ func DeleteOmittedFields(client *pluginapi.Client, groupID, pluginID string, use
 
 	fields, err := searchGroupFields(client, groupID, nil)
 	if err != nil {
-		client.Log.Error("Failed to search property fields for deletion", "error", err.Error())
-		return
+		return err
 	}
 
 	deleteField := func(field *model.PropertyField) {
@@ -644,4 +646,5 @@ func DeleteOmittedFields(client *pluginapi.Client, groupID, pluginID string, use
 			deleteField(field)
 		}
 	}
+	return nil
 }

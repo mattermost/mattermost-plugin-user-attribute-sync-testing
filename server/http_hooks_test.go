@@ -424,6 +424,27 @@ func TestHandleDeleteUserAttributes(t *testing.T) {
 		require.Equal(t, 0, body.ChannelsSkipped)
 	})
 
+	t.Run("reports a failed field removal", func(t *testing.T) {
+		p, api := newTestPlugin(t)
+
+		userID := model.NewId()
+		asSysadmin(api, userID)
+		api.On("KVSetWithOptions", sync.AttributesStoreKey, []byte(nil), model.PluginKVSetOptions{}).
+			Return(true, nil).Once()
+		api.On("SearchPropertyFields", "group-id", mock.Anything).
+			Return(nil, model.NewAppError("SearchPropertyFields", "app.error", nil, "connection refused", http.StatusInternalServerError)).Once()
+
+		resp := doRequest(t, p, http.MethodDelete, "/attributes", userID, nil)
+		require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+
+		var body struct {
+			Error string `json:"error"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+		require.Contains(t, body.Error, "document deleted but attribute removal failed:")
+		api.AssertNotCalled(t, "DeletePropertyField", mock.Anything, mock.Anything)
+	})
+
 	t.Run("reports a failed delete", func(t *testing.T) {
 		p, api := newTestPlugin(t)
 

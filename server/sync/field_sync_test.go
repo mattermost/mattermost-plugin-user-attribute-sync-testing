@@ -1247,7 +1247,7 @@ func TestDeleteOmittedFields(t *testing.T) {
 		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, summary)
+		require.NoError(t, DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, summary))
 
 		assert.Equal(t, 1, summary.FieldsDeleted)
 		api.AssertExpectations(t)
@@ -1270,7 +1270,7 @@ func TestDeleteOmittedFields(t *testing.T) {
 		mockDeletionScan(api, adminField, otherPluginField).Once()
 		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
-		DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, &Summary{})
+		require.NoError(t, DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, &Summary{}))
 
 		api.AssertExpectations(t)
 		api.AssertNotCalled(t, "DeletePropertyValuesForField", mock.Anything, mock.Anything)
@@ -1304,7 +1304,7 @@ func TestDeleteOmittedFields(t *testing.T) {
 		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		DeleteOmittedFields(client, groupID, pluginID, []FieldDefinition{keep}, nil, nil, summary)
+		require.NoError(t, DeleteOmittedFields(client, groupID, pluginID, []FieldDefinition{keep}, nil, nil, summary))
 
 		assert.Equal(t, 1, summary.FieldsDeleted)
 		api.AssertExpectations(t)
@@ -1329,7 +1329,7 @@ func TestDeleteOmittedFields(t *testing.T) {
 		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		DeleteOmittedFields(client, groupID, pluginID, nil, []FieldDefinition{{Name: "classification"}}, nil, summary)
+		require.NoError(t, DeleteOmittedFields(client, groupID, pluginID, nil, []FieldDefinition{{Name: "classification"}}, nil, summary))
 
 		assert.Equal(t, 1, summary.FieldsDeleted)
 		api.AssertExpectations(t)
@@ -1353,7 +1353,7 @@ func TestDeleteOmittedFields(t *testing.T) {
 		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		DeleteOmittedFields(client, groupID, pluginID, []FieldDefinition{{Name: "classification"}}, nil, nil, summary)
+		require.NoError(t, DeleteOmittedFields(client, groupID, pluginID, []FieldDefinition{{Name: "classification"}}, nil, nil, summary))
 
 		assert.Equal(t, 1, summary.FieldsDeleted)
 		api.AssertExpectations(t)
@@ -1384,7 +1384,7 @@ func TestDeleteOmittedFields(t *testing.T) {
 		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		DeleteOmittedFields(client, groupID, pluginID, nil, nil, []FieldDefinition{{Name: "clearance"}}, summary)
+		require.NoError(t, DeleteOmittedFields(client, groupID, pluginID, nil, nil, []FieldDefinition{{Name: "clearance"}}, summary))
 
 		assert.Equal(t, 1, summary.FieldsDeleted)
 		api.AssertExpectations(t)
@@ -1418,7 +1418,7 @@ func TestDeleteOmittedFields(t *testing.T) {
 		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, summary)
+		require.NoError(t, DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, summary))
 
 		assert.Equal(t, 2, summary.FieldsDeleted)
 		api.AssertExpectations(t)
@@ -1452,7 +1452,7 @@ func TestDeleteOmittedFields(t *testing.T) {
 		api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, summary)
+		require.NoError(t, DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, summary))
 
 		assert.Equal(t, 1, summary.FieldsDeleted)
 		api.AssertExpectations(t)
@@ -1482,7 +1482,7 @@ func TestDeleteOmittedFields(t *testing.T) {
 		api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		DeleteOmittedFields(client, groupID, pluginID, []FieldDefinition{{Name: "clearance"}}, nil, nil, summary)
+		require.NoError(t, DeleteOmittedFields(client, groupID, pluginID, []FieldDefinition{{Name: "clearance"}}, nil, nil, summary))
 
 		assert.Equal(t, 0, summary.FieldsDeleted)
 		api.AssertExpectations(t)
@@ -1520,7 +1520,7 @@ func TestDeleteOmittedFields(t *testing.T) {
 		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, summary)
+		require.NoError(t, DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, summary))
 
 		assert.Equal(t, fieldSearchPerPage+1, summary.FieldsDeleted)
 		api.AssertExpectations(t)
@@ -1532,10 +1532,10 @@ func TestDeleteOmittedFields(t *testing.T) {
 		api.On("SearchPropertyFields", groupID, mock.MatchedBy(func(opts model.PropertyFieldSearchOpts) bool {
 			return len(opts.ObjectTypes) == 0
 		})).Return(nil, errors.New("search failed")).Once()
-		api.On("LogError", mock.Anything, mock.Anything, mock.Anything).Maybe()
 
-		DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, &Summary{})
+		err := DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, &Summary{})
 
+		require.ErrorContains(t, err, "search failed")
 		api.AssertExpectations(t)
 		api.AssertNotCalled(t, "DeletePropertyValuesForField", mock.Anything, mock.Anything)
 		api.AssertNotCalled(t, "DeletePropertyField", mock.Anything, mock.Anything)
@@ -1574,7 +1574,7 @@ func TestDeleteOmittedFields(t *testing.T) {
 		api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, summary)
+		require.NoError(t, DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, summary))
 
 		assert.Equal(t, 1, summary.FieldsDeleted)
 		api.AssertExpectations(t)
