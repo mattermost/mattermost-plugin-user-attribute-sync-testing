@@ -81,7 +81,8 @@ func (p *Plugin) handleUploadAttributes(w http.ResponseWriter, r *http.Request) 
 	// a few unusable records, and refusing all of it means syncing nothing. Value sync already
 	// handles them one at a time: unknown fields, unsupported types, unmatched emails and failed
 	// writes each log a warning and move on to the next record.
-	if _, err = sync.ParseAttributesDocument(raw); err != nil {
+	doc, err := sync.ParseAttributesDocument(raw)
+	if err != nil {
 		p.errorWithJSON(w, http.StatusBadRequest, fmt.Sprintf("invalid attributes document: %s", err))
 		return
 	}
@@ -101,7 +102,11 @@ func (p *Plugin) handleUploadAttributes(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	summary, err := p.runSync()
+	// Sync the parsed body, not a KV re-read: plugin KV Get hits the replica, Set the
+	// master, so a read-your-writes here can miss and look like an empty store.
+	p.syncLock.Lock()
+	summary, err := sync.SyncDocument(p.client, p.groupID, manifest.Id, doc)
+	p.syncLock.Unlock()
 	if err != nil {
 		p.client.Log.Error("stored attributes document but sync failed", "err", err)
 		p.errorWithJSON(w, http.StatusInternalServerError,

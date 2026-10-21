@@ -165,7 +165,6 @@ func TestHandleUploadUserAttributes(t *testing.T) {
 		asSysadmin(api, userID)
 		api.On("KVSetWithOptions", sync.AttributesStoreKey, storesFile(validFile), model.PluginKVSetOptions{}).
 			Return(true, nil).Once()
-		api.On("KVGet", sync.AttributesStoreKey).Return(storedValue(t, time.Now(), validFile), nil).Once()
 		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
 			return f.Name == "job_title"
 		})).Return(&model.PropertyField{ID: "field-1", Name: "job_title", Type: model.PropertyFieldTypeText}, nil)
@@ -188,24 +187,23 @@ func TestHandleUploadUserAttributes(t *testing.T) {
 		require.Equal(t, 0, body.ChannelsSkipped)
 	})
 
-	t.Run("stores the document when sync fails", func(t *testing.T) {
+	t.Run("stores the document when field lookup fails", func(t *testing.T) {
 		p, api := newTestPlugin(t)
 
 		userID := model.NewId()
 		asSysadmin(api, userID)
 		api.On("KVSetWithOptions", sync.AttributesStoreKey, storesFile(validFile), model.PluginKVSetOptions{}).
 			Return(true, nil).Once()
-		api.On("KVGet", sync.AttributesStoreKey).
-			Return(nil, model.NewAppError("KVGet", "kv.get.app_error", nil, "connection refused", http.StatusInternalServerError)).Once()
+		api.On("SearchPropertyFields", "group-id", mock.Anything).
+			Return(nil, model.NewAppError("SearchPropertyFields", "app.error", nil, "connection refused", http.StatusInternalServerError))
+		api.On("GetUserByEmail", "user1@example.com").Return(&model.User{Id: "user1", Email: "user1@example.com"}, nil)
 
 		resp := doRequest(t, p, http.MethodPost, "/attributes", userID, validFile)
-		require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+		require.Equal(t, http.StatusCreated, resp.StatusCode)
 
-		var body struct {
-			Error string `json:"error"`
-		}
+		var body sync.Summary
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
-		require.Contains(t, body.Error, "document stored but sync failed:")
+		require.Equal(t, 1, body.FieldsSkipped)
 	})
 
 	t.Run("rejects truncated json", func(t *testing.T) {
