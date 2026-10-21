@@ -111,6 +111,8 @@ The uploaded document is the full list of fields this plugin owns. A field it pr
 
 `shared_only` with `permission_values: member` is a combination the server rejects. A rejected field is skipped and logged; the rest of the document still syncs. `protected` is not a document field — it is always `true`.
 
+Display actions are not a document field either. Every field the plugin creates or updates gets all three — the top banner, the channel header label, and the channel info label — so a value shows up in each of those places wherever the UI supports it for that object type. There is currently no way to choose a subset per field.
+
 - `email` matches a user record to a Mattermost user; `team` and `channel` match a channel record. None of them are written as attributes.
 - Every other key on a record is an attribute `name` from `fields.user` (user records) or `fields.channel` (channel records). Keys that do not match a field in that list are skipped with a warning in the logs.
 - Text and date values are strings; dates use `YYYY-MM-DD`.

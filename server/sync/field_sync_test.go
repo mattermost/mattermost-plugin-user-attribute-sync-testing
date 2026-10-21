@@ -355,6 +355,48 @@ func TestSyncFields(t *testing.T) {
 		api.AssertExpectations(t)
 	})
 
+	t.Run("sets the display actions on created and updated fields", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		existingTitle := &model.PropertyField{
+			ID:      "existing_id_1",
+			GroupID: groupID,
+			Name:    "job_title",
+			Type:    model.PropertyFieldTypeText,
+			Attrs: model.StringInterface{
+				model.PropertyAttrsSourcePluginID: pluginID,
+			},
+		}
+		actionDefs := []FieldDefinition{
+			{Name: "job_title", DisplayName: "Job Title", Type: model.PropertyFieldTypeText},
+			{Name: "start_date", DisplayName: "Start Date", Type: model.PropertyFieldTypeDate},
+		}
+		hasDisplayActions := func(f *model.PropertyField) bool {
+			return assert.ObjectsAreEqual(displayActions, f.Attrs[model.PropertyFieldAttrActions])
+		}
+
+		api.On("UpdatePropertyField", groupID, mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.ID == "existing_id_1" && hasDisplayActions(f)
+		})).Return(existingTitle, nil).Once()
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.Name == "start_date" && hasDisplayActions(f)
+		})).Return(&model.PropertyField{ID: "generated_id_1", Name: "start_date", Type: model.PropertyFieldTypeDate}, nil).Once()
+		mockFieldLookup(api, groupID, existingTitle)
+		mockEmptyFieldSearch(api, groupID)
+
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		summary := &Summary{}
+		_, err := SyncFields(client, groupID, pluginID, model.PropertyFieldObjectTypeUser, actionDefs, nil, summary)
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, summary.FieldsCreated)
+		assert.Equal(t, 1, summary.FieldsUpdated)
+		api.AssertExpectations(t)
+	})
+
 	t.Run("a template name missing from the map skips only that field", func(t *testing.T) {
 		api := &plugintest.API{}
 		client := pluginapi.NewClient(api, &plugintest.Driver{})

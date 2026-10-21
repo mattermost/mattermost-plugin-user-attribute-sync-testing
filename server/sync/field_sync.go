@@ -84,6 +84,14 @@ func (d FieldDefinition) visibility() string {
 	return d.Visibility
 }
 
+// Banner, header labels, and channel-info chips. Hardcoded on every field;
+// document plumbing if a field ever needs a subset.
+var displayActions = []interface{}{
+	model.PropertyFieldActionDisplayBannerTop,
+	model.PropertyFieldActionDisplayLabelHeader,
+	model.PropertyFieldActionDisplayLabelInfo,
+}
+
 func (d FieldDefinition) accessMode() string {
 	if d.AccessMode == "" || d.AccessMode == "public" {
 		return model.PropertyAccessModePublic
@@ -134,6 +142,7 @@ func updateField(
 	existingField.Attrs[model.PropertyFieldAttrVisibility] = def.visibility()
 	existingField.Attrs[model.PropertyFieldAttrDisplayName] = def.DisplayName
 	existingField.Attrs[model.PropertyAttrsProtected] = true
+	existingField.Attrs[model.PropertyFieldAttrActions] = displayActions
 	if !linked {
 		existingField.Attrs[model.PropertyAttrsAccessMode] = def.accessMode()
 	}
@@ -246,6 +255,8 @@ func createField(
 			// This prevents users and admins from manually editing data that should be
 			// synchronized from an external source. Required for non-public access modes.
 			model.PropertyAttrsProtected: true,
+
+			model.PropertyFieldAttrActions: displayActions,
 		},
 	}
 
