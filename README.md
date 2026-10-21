@@ -29,7 +29,7 @@ The attributes appear in **System Console → User Attributes**, on user profile
 
 - Mattermost server 12.0.0 or later (the `graph` attribute type requires it, and a server whose `PropertyFieldGraph` feature flag is off refuses graph fields)
 - An Enterprise Advanced license, for ABAC. Channel attributes need this tier specifically: below it every channel field is skipped and counted in the upload summary's skipped-fields number, and user attributes still sync.
-- Go 1.26.3 or later, to build the server binaries
+- Go 1.26.7 or later, to build the server binaries
 - Node v20.11, to build the webapp bundle and run the end-to-end tests
 
 ## Install

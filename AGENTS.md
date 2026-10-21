@@ -11,9 +11,9 @@ It is a fork of `mattermost-plugin-user-attribute-sync-starter-template` and is 
 It ships **one data source**: a JSON file uploaded through the System Console into the plugin KV store, read by `ReadStoredAttributes`. Uploading is the only way to give the plugin data — a filesystem source would be awkward or impossible to deploy in some environments anyway, since Cloud installations give no direct filesystem access and container filesystems are ephemeral, so a file placed next to the server would not survive a restart. Supporting the upload is what pulls in the rest of the machinery: a custom admin console setting, a plugin HTTP API, and server-side storage.
 
 **Plugin ID:** `com.mattermost.user-attribute-sync-test-tool`
-**Min Mattermost version:** 12.0.0 (the `graph` field type requires it). Until a v12 `server/public` is published, `go.mod` reads that module from a local checkout of the `dk-graph-property-fields` branch through a `replace` directive — never hand-edit that checkout, it is read-only reference.
+**Min Mattermost version:** 12.0.0 (the `graph` field type requires it). `go.mod` pins `server/public` to `v0.5.0`. That tag was cut from the 12.1 line, not from `release-12.0`, but every model constant and plugin API method the plugin uses also exists on `release-12.0`, so the build still runs against a 12.0 server. Check `release-12.0` before using a newer `server/public` API, or the plugin will build but fail at runtime against a 12.0 server.
 **License:** Enterprise Advanced, for ABAC. Every field and value operation on the `access_control` group requires a license, so the plugin fails at activation without one. Channel fields need this tier specifically: below it every channel field is skipped and counted in `FieldsSkipped`, and the rest of the document still syncs.
-**Languages:** Go 1.26.3+ (server), TypeScript/React (webapp)
+**Languages:** Go 1.26.7+ (server), TypeScript/React (webapp)
 
 ## Architecture
 
