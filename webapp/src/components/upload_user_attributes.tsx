@@ -185,6 +185,7 @@ export default function UploadUserAttributes({id, disabled = false}: Props) {
             );
 
             const body = await response.json().catch(() => ({}));
+            await checkServerFileStatus();
             if (!response.ok) {
                 throw new Error(body.error ?? `Upload failed (${response.status})`);
             }
@@ -195,7 +196,6 @@ export default function UploadUserAttributes({id, disabled = false}: Props) {
                 inputRef.current.value = '';
             }
             setSuccess('File uploaded');
-            await checkServerFileStatus();
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Upload failed');
         } finally {

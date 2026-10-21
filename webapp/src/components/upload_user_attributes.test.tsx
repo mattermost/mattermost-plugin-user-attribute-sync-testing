@@ -132,6 +132,37 @@ test('shows the sync summary after upload and refreshes file status from the sta
     expect(screen.getByText(/File detected/)).toBeInTheDocument();
 });
 
+test('enables download when upload stores the file but sync fails', async () => {
+    let stored = false;
+    fetchMock.mockImplementation((url: RequestInfo, init?: RequestInit) => {
+        if (requestMethod(init) === 'POST') {
+            stored = true;
+            return Promise.resolve({
+                ok: false,
+                status: 500,
+                json: () => Promise.resolve({error: 'document stored but sync failed: boom'}),
+            });
+        }
+        if (String(url).includes('/attributes/status')) {
+            return Promise.resolve(jsonResponse(
+                stored ?
+                    {exists: true, lastUpdated: '2026-09-15T12:00:00.000Z'} :
+                    {exists: false, lastUpdated: null},
+            ));
+        }
+        return Promise.resolve(jsonResponse({exists: false, lastUpdated: null}));
+    });
+
+    await renderPanel();
+    await chooseAttributesFile();
+    await act(async () => {
+        fireEvent.click(screen.getByRole('button', {name: 'Upload'}));
+    });
+
+    expect(await screen.findByText('document stored but sync failed: boom')).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'Download'})).toBeEnabled();
+});
+
 test('shows a zero sync summary after upload', async () => {
     let stored = false;
     fetchMock.mockImplementation((url: RequestInfo, init?: RequestInit) => {
