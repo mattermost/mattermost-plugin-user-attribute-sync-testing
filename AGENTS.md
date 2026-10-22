@@ -98,7 +98,7 @@ Come from `fields.template`, `fields.user`, and `fields.channel` in the uploaded
 
 1. **Job Title** — `job_title`, Text type, Public access
 2. **Programs** — `programs`, Multiselect type, SharedOnly access, options: Apples/Oranges/Lemons/Grapes
-3. **Clearance** — `clearance`, a Rank template (SharedOnly access, options: CUI(1)/Confidential(2)/Secret(3)/Top Secret(4)) with a linked user field of the same name
+3. **Clearance** — `clearance`, a Rank template (SharedOnly access, options: Unclassified(1)/CUI(2)/Confidential(3)/Secret(4)/Top Secret(5)) with a linked user field of the same name
 4. **Start Date** — `start_date`, Date type, SourceOnly access
 
 A user or channel definition links to a template by carrying a `template` key naming an entry in the same document's `fields.template`. The linked field serves the template's option set, so a user field and a channel field linked to one template share option IDs — which is what lets an ABAC policy compare `user.attributes.<name>` against `resource.attributes.<name>`. On a linked definition `type`, `options`, and `access_mode` are ignored (the server copies them from the template); `visibility` and the `permission_*` keys still apply. Linking is optional — a definition with no `template` key behaves as it always has. Templates hold no values: a template name used as a key in a `users` or `channels` record is an unknown field, skipped with a warning. Name uniqueness is per object type, so a template, a user field, and a channel field may share a name. A `template` key naming a template the document does not define fails that one field — logged, counted in `FieldsSkipped`, rest of the document still syncs.

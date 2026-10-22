@@ -226,10 +226,11 @@ A rank attribute works like a select — a user holds one option — except each
   "type": "rank",
   "access_mode": "shared_only",
   "options": [
-    {"name": "CUI", "rank": 1},
-    {"name": "Confidential", "rank": 2},
-    {"name": "Secret", "rank": 3},
-    {"name": "Top Secret", "rank": 4}
+    {"name": "Unclassified", "rank": 1},
+    {"name": "CUI", "rank": 2},
+    {"name": "Confidential", "rank": 3},
+    {"name": "Secret", "rank": 4},
+    {"name": "Top Secret", "rank": 5}
   ]
 }
 ```
