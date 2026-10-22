@@ -111,6 +111,11 @@ func (d FieldDefinition) permissionOptions() *model.PermissionLevel {
 	return permissionLevelPtr(d.PermissionOptions)
 }
 
+// permissionLevelPtr defaults to sysadmin. Shared_only rejects a member-level
+// PermissionValues (members edit their own value): anyone could pick any value and
+// fake sharing it, so PermissionValues defaults to sysadmin to clear that check.
+// PermissionField and PermissionOptions are pinned to sysadmin by the server for
+// access_control fields, and default the same way so all three read identically.
 func permissionLevelPtr(value string) *model.PermissionLevel {
 	level := model.PermissionLevelSysadmin
 	if value != "" {
@@ -150,7 +155,6 @@ func updateField(
 	existingField.Attrs[model.PropertyFieldAttrDisplayName] = def.DisplayName
 	existingField.Attrs[model.PropertyAttrsProtected] = true
 	existingField.Attrs[model.PropertyFieldAttrActions] = displayActions
-	// See createField for why the permission-level default is sysadmin.
 	existingField.PermissionField = def.permissionField()
 	existingField.PermissionValues = def.permissionValues()
 	existingField.PermissionOptions = def.permissionOptions()
@@ -204,11 +208,6 @@ func createField(
 ) (*model.PropertyField, error) {
 	client.Log.Info("Field does not exist, creating", "name", def.Name)
 
-	// Shared_only rejects a member-level PermissionValues (members edit their own
-	// value): anyone could pick any value and fake sharing it. PermissionValues defaults
-	// to sysadmin to clear that check. PermissionField and PermissionOptions are
-	// pinned to sysadmin by the server for access_control fields, and default
-	// the same way so all three read identically.
 	field := &model.PropertyField{
 		GroupID:           groupID,
 		Name:              def.Name,
