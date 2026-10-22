@@ -26,7 +26,7 @@ Plugin Activation (Once)
 System Console (Admin, on demand)
   └─> Custom "Attributes" setting (webapp)
         └─> Upload / download / delete the stored file
-              └─> Plugin HTTP API ──> KV store, then SyncDocument (upload) or field wipe (delete)
+              └─> Plugin HTTP API ──> upload: KV store, then SyncDocument; delete: field wipe, then KV delete
                     └─> Response is the sync summary the panel renders
 ```
 
@@ -130,7 +130,7 @@ Field types cannot be changed after creation (a Mattermost limitation), and conv
 4. `SyncUsers()` iterates users, looks up each by email, calls `buildPropertyValues()` to create `PropertyValue` objects, then bulk upserts via `Property.UpsertPropertyValues()`. `SyncChannels()` does the same after `Channel.GetByNameForTeamName(team, channel)`.
 5. For fields with options (select, multiselect, rank, graph), option names are translated to option IDs using `FieldIDCache`
 
-Upload skips the KV read: under `syncLock`, `handleUploadAttributes` stores the bytes, then runs `SyncDocument()` on the document it already parsed, and answers `201` with the `Summary`. Re-reading the store would not be safe — plugin KV reads can hit a database replica that has not yet seen the write, which looks like an empty store. `handleDeleteAttributes` takes the same lock, deletes the KV key first, then `DeleteOmittedFields` with an empty keep-list so every plugin-owned field (and its values) is removed. `DeleteOmittedFields` returns an error only when its field search fails: delete answers `500` on it, because no document is left for activation to retry from, while `SyncDocument` logs it and carries on with value sync.
+Upload skips the KV read: under `syncLock`, `handleUploadAttributes` stores the bytes, then runs `SyncDocument()` on the document it already parsed, and answers `201` with the `Summary`. Re-reading the store would not be safe — plugin KV reads can hit a database replica that has not yet seen the write, which looks like an empty store. `handleDeleteAttributes` takes the same lock, runs `DeleteOmittedFields` with an empty keep-list so every plugin-owned field (and its values) is removed, and only then deletes the KV key. `DeleteOmittedFields` returns an error when its field search fails or any field fails to delete (after attempting the rest). Delete answers `500` on it and keeps the stored document, so the admin can retry and activation in the meantime reapplies the document rather than leaving fields no document describes; `SyncDocument` logs the same error and carries on with value sync.
 
 **Invariants worth knowing before changing sync code:**
 
@@ -155,7 +155,7 @@ Registered in `server/http_hooks.go` on a `gorilla/mux` router, served through t
 | `POST` | `/attributes` | Upload the attributes document into the KV store, then sync it. Body is the raw JSON document. `201` is the `Summary`. Store-then-sync-fail is `500` with the document still stored. |
 | `GET` | `/attributes` | Download the stored document verbatim. `404` when nothing is stored. |
 | `GET` | `/attributes/status` | `{"exists": bool, "lastUpdated": time\|null}` — lets the UI show whether a document is stored, and how current it is, without downloading it. |
-| `DELETE` | `/attributes` | Remove the stored document, then every field this plugin owns. `200` is the `Summary` (field-delete counts filled in). A failed field search after the document is gone is `500`, "document deleted but attribute removal failed". |
+| `DELETE` | `/attributes` | Remove every field this plugin owns, then the stored document. `200` is the `Summary` (field-delete counts filled in). A failed field search or field delete is `500` with the document kept ("attribute removal failed, file kept so the delete can be retried"); a failed KV delete after that is `500`, "attributes removed but failed to delete file". |
 
 Things to preserve when changing these:
 

@@ -158,23 +158,25 @@ func (p *Plugin) handleAttributesStatus(w http.ResponseWriter, r *http.Request) 
 	p.responseWithJSON(w, http.StatusOK, status)
 }
 
-// handleDeleteAttributes removes the stored document first so a half-failed field
-// wipe cannot be reapplied on the next activation.
+// handleDeleteAttributes removes the fields before the stored document, and keeps
+// the document if any field survives: the admin can retry the delete, even after a
+// reload, and activation in the meantime reapplies the document rather than leaving
+// fields no document describes.
 func (p *Plugin) handleDeleteAttributes(w http.ResponseWriter, r *http.Request) {
 	p.syncLock.Lock()
 	defer p.syncLock.Unlock()
 
-	if err := p.client.KV.Delete(sync.AttributesStoreKey); err != nil {
-		p.client.Log.Error("failed to delete attributes document", "err", err)
-		p.errorWithJSON(w, http.StatusInternalServerError, "failed to delete file")
+	summary := sync.Summary{}
+	if err := sync.DeleteOmittedFields(p.client, p.groupID, manifest.Id, nil, nil, nil, &summary); err != nil {
+		p.client.Log.Error("failed to remove attributes, keeping the stored document", "err", err)
+		p.errorWithJSON(w, http.StatusInternalServerError,
+			fmt.Sprintf("attribute removal failed, file kept so the delete can be retried: %s", err))
 		return
 	}
 
-	summary := sync.Summary{}
-	if err := sync.DeleteOmittedFields(p.client, p.groupID, manifest.Id, nil, nil, nil, &summary); err != nil {
-		p.client.Log.Error("deleted attributes document but field removal failed", "err", err)
-		p.errorWithJSON(w, http.StatusInternalServerError,
-			fmt.Sprintf("document deleted but attribute removal failed: %s", err))
+	if err := p.client.KV.Delete(sync.AttributesStoreKey); err != nil {
+		p.client.Log.Error("removed attributes but failed to delete attributes document", "err", err)
+		p.errorWithJSON(w, http.StatusInternalServerError, "attributes removed but failed to delete file")
 		return
 	}
 	p.responseWithJSON(w, http.StatusOK, summary)

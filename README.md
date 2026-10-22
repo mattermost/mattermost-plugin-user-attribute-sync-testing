@@ -145,7 +145,7 @@ The upload panel is a client for four endpoints, which are useful for seeding a 
 | `POST` | `/attributes` | Store a document and sync it. The body is the raw JSON. `201` answers with the sync summary (`fieldsCreated`, `fieldsUpdated`, `fieldsDeleted`, `fieldsSkipped`, `usersSynced`, `usersSkipped`, `channelsSynced`, `channelsSkipped`). If the document is stored but the sync fails, `500`. |
 | `GET` | `/attributes` | Download the stored document. |
 | `GET` | `/attributes/status` | `{"exists": bool, "lastUpdated": time\|null}` |
-| `DELETE` | `/attributes` | Remove the stored document and every field this plugin owns (values first). `200` answers with the same summary shape; field-delete counts are filled in, the rest stay `0`. If the document is removed but the plugin cannot list its fields, the answer is `500` and the fields stay — delete again to retry. |
+| `DELETE` | `/attributes` | Remove the stored document and every field this plugin owns (values first). `200` answers with the same summary shape; field-delete counts are filled in, the rest stay `0`. Fields go first: if any cannot be removed, the answer is `500` and the document is kept — delete again to retry. |
 
 Full paths are prefixed with `/plugins/com.mattermost.user-attribute-sync-test-tool`.
 

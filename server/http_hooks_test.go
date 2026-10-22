@@ -130,6 +130,20 @@ func requireErrorResponse(t *testing.T, resp *http.Response, statusCode int, mes
 	require.Equal(t, message, body.Error)
 }
 
+// requireErrorContains is requireErrorResponse for messages that end with the
+// underlying error, matching only the fixed part.
+func requireErrorContains(t *testing.T, resp *http.Response, statusCode int, message string) {
+	t.Helper()
+
+	require.Equal(t, statusCode, resp.StatusCode)
+
+	var body struct {
+		Error string `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	require.Contains(t, body.Error, message)
+}
+
 // TestUserAttributesAccessControl covers the two rejection paths the requireSysadmin middleware
 // applies to every endpoint, so the individual handler tests below can assume an authorized admin.
 // Driving each method and path proves the middleware is actually reached by all of them, which is
@@ -408,9 +422,6 @@ func TestHandleDeleteUserAttributes(t *testing.T) {
 
 		userID := model.NewId()
 		asSysadmin(api, userID)
-		// KV.Delete is a Set of a nil value under the hood.
-		api.On("KVSetWithOptions", sync.AttributesStoreKey, []byte(nil), model.PluginKVSetOptions{}).
-			Return(true, nil).Once()
 		owned := &model.PropertyField{
 			ID:       model.NewId(),
 			Name:     "old_title",
@@ -421,6 +432,9 @@ func TestHandleDeleteUserAttributes(t *testing.T) {
 		mock.InOrder(
 			api.On("DeletePropertyValuesForField", "group-id", owned.ID).Return(nil).Once(),
 			api.On("DeletePropertyField", "group-id", owned.ID).Return(nil).Once(),
+			// KV.Delete is a Set of a nil value under the hood.
+			api.On("KVSetWithOptions", sync.AttributesStoreKey, []byte(nil), model.PluginKVSetOptions{}).
+				Return(true, nil).Once(),
 		)
 
 		resp := doRequest(t, p, http.MethodDelete, "/attributes", userID, nil)
@@ -438,43 +452,52 @@ func TestHandleDeleteUserAttributes(t *testing.T) {
 		require.Equal(t, 0, body.ChannelsSkipped)
 	})
 
-	t.Run("reports a failed field removal", func(t *testing.T) {
+	t.Run("keeps the stored file when the field search fails", func(t *testing.T) {
 		p, api := newTestPlugin(t)
 
 		userID := model.NewId()
 		asSysadmin(api, userID)
-		api.On("KVSetWithOptions", sync.AttributesStoreKey, []byte(nil), model.PluginKVSetOptions{}).
-			Return(true, nil).Once()
 		api.On("SearchPropertyFields", "group-id", mock.Anything).
 			Return(nil, model.NewAppError("SearchPropertyFields", "app.error", nil, "connection refused", http.StatusInternalServerError)).Once()
 
 		resp := doRequest(t, p, http.MethodDelete, "/attributes", userID, nil)
-		require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
-
-		var body struct {
-			Error string `json:"error"`
-		}
-		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
-		require.Contains(t, body.Error, "document deleted but attribute removal failed:")
+		requireErrorContains(t, resp, http.StatusInternalServerError, "attribute removal failed, file kept so the delete can be retried:")
 		api.AssertNotCalled(t, "DeletePropertyField", mock.Anything, mock.Anything)
+		api.AssertNotCalled(t, "KVSetWithOptions", sync.AttributesStoreKey, mock.Anything, mock.Anything)
 	})
 
-	t.Run("reports a failed delete", func(t *testing.T) {
+	t.Run("keeps the stored file when a field delete fails", func(t *testing.T) {
 		p, api := newTestPlugin(t)
 
 		userID := model.NewId()
 		asSysadmin(api, userID)
-		api.On("KVSetWithOptions", sync.AttributesStoreKey, []byte(nil), model.PluginKVSetOptions{}).
-			Return(false, model.NewAppError("KVSetWithOptions", "kv.set.app_error", nil, "connection refused", http.StatusInternalServerError)).Once()
-		api.On("SearchPropertyFields", mock.Anything, mock.Anything).Maybe()
-		api.On("DeletePropertyValuesForField", mock.Anything, mock.Anything).Maybe()
-		api.On("DeletePropertyField", mock.Anything, mock.Anything).Maybe()
+		owned := &model.PropertyField{
+			ID:       model.NewId(),
+			Name:     "old_title",
+			CreateAt: 1,
+			Attrs:    model.StringInterface{model.PropertyAttrsSourcePluginID: manifest.Id},
+		}
+		api.On("SearchPropertyFields", "group-id", mock.Anything).Return([]*model.PropertyField{owned}, nil).Once()
+		api.On("DeletePropertyValuesForField", "group-id", owned.ID).Return(nil).Once()
+		api.On("DeletePropertyField", "group-id", owned.ID).
+			Return(model.NewAppError("DeletePropertyField", "app.error", nil, "connection refused", http.StatusInternalServerError)).Once()
 
 		resp := doRequest(t, p, http.MethodDelete, "/attributes", userID, nil)
-		requireErrorResponse(t, resp, http.StatusInternalServerError, "failed to delete file")
-		api.AssertNotCalled(t, "SearchPropertyFields", mock.Anything, mock.Anything)
-		api.AssertNotCalled(t, "DeletePropertyValuesForField", mock.Anything, mock.Anything)
-		api.AssertNotCalled(t, "DeletePropertyField", mock.Anything, mock.Anything)
+		requireErrorContains(t, resp, http.StatusInternalServerError, "attribute removal failed, file kept so the delete can be retried:")
+		api.AssertNotCalled(t, "KVSetWithOptions", sync.AttributesStoreKey, mock.Anything, mock.Anything)
+	})
+
+	t.Run("reports a failed file delete after the fields are removed", func(t *testing.T) {
+		p, api := newTestPlugin(t)
+
+		userID := model.NewId()
+		asSysadmin(api, userID)
+		api.On("SearchPropertyFields", "group-id", mock.Anything).Return([]*model.PropertyField{}, nil).Once()
+		api.On("KVSetWithOptions", sync.AttributesStoreKey, []byte(nil), model.PluginKVSetOptions{}).
+			Return(false, model.NewAppError("KVSetWithOptions", "kv.set.app_error", nil, "connection refused", http.StatusInternalServerError)).Once()
+
+		resp := doRequest(t, p, http.MethodDelete, "/attributes", userID, nil)
+		requireErrorResponse(t, resp, http.StatusInternalServerError, "attributes removed but failed to delete file")
 	})
 }
 

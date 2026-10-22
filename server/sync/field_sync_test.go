@@ -1424,7 +1424,7 @@ func TestDeleteOmittedFields(t *testing.T) {
 		api.AssertExpectations(t)
 	})
 
-	t.Run("a failed template delete is logged and the pass continues", func(t *testing.T) {
+	t.Run("a failed template delete is logged, the pass continues, and the failure is returned", func(t *testing.T) {
 		api := &plugintest.API{}
 		client := pluginapi.NewClient(api, &plugintest.Driver{})
 		template := &model.PropertyField{
@@ -1452,7 +1452,7 @@ func TestDeleteOmittedFields(t *testing.T) {
 		api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		require.NoError(t, DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, summary))
+		require.EqualError(t, DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, summary), "failed to delete 1 field(s)")
 
 		assert.Equal(t, 1, summary.FieldsDeleted)
 		api.AssertExpectations(t)
@@ -1482,7 +1482,7 @@ func TestDeleteOmittedFields(t *testing.T) {
 		api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		require.NoError(t, DeleteOmittedFields(client, groupID, pluginID, []FieldDefinition{{Name: "clearance"}}, nil, nil, summary))
+		require.EqualError(t, DeleteOmittedFields(client, groupID, pluginID, []FieldDefinition{{Name: "clearance"}}, nil, nil, summary), "failed to delete 1 field(s)")
 
 		assert.Equal(t, 0, summary.FieldsDeleted)
 		api.AssertExpectations(t)
@@ -1541,7 +1541,7 @@ func TestDeleteOmittedFields(t *testing.T) {
 		api.AssertNotCalled(t, "DeletePropertyField", mock.Anything, mock.Anything)
 	})
 
-	t.Run("continues after a per-field delete error", func(t *testing.T) {
+	t.Run("continues after a per-field delete error and returns the failure count", func(t *testing.T) {
 		api := &plugintest.API{}
 		client := pluginapi.NewClient(api, &plugintest.Driver{})
 		first := &model.PropertyField{
@@ -1574,7 +1574,7 @@ func TestDeleteOmittedFields(t *testing.T) {
 		api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		summary := &Summary{}
-		require.NoError(t, DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, summary))
+		require.EqualError(t, DeleteOmittedFields(client, groupID, pluginID, nil, nil, nil, summary), "failed to delete 2 field(s)")
 
 		assert.Equal(t, 1, summary.FieldsDeleted)
 		api.AssertExpectations(t)

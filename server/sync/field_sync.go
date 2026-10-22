@@ -578,8 +578,9 @@ func searchGroupFields(client *pluginapi.Client, groupID string, objectTypes []s
 // channel fields can link to one. A template delete that still fails (a
 // dependent the document keeps) is logged and skipped, leaving both fields.
 //
-// Only a failed field search is returned as an error, since nothing can be
-// deleted without it; per-field delete failures are logged and skipped.
+// A per-field delete failure is logged and the pass moves on to the next
+// field, then the pass returns an error counting the failures. A failed field
+// search returns immediately, since nothing can be deleted without it.
 func DeleteOmittedFields(client *pluginapi.Client, groupID, pluginID string, userDefs, channelDefs, templateDefs []FieldDefinition, summary *Summary) error {
 	named := make(map[string]struct{}, len(userDefs)+len(channelDefs)+len(templateDefs))
 	for _, def := range userDefs {
@@ -597,6 +598,7 @@ func DeleteOmittedFields(client *pluginapi.Client, groupID, pluginID string, use
 		return err
 	}
 
+	failed := 0
 	deleteField := func(field *model.PropertyField) {
 		if _, keep := named[field.ObjectType+"|"+field.Name]; keep {
 			return
@@ -616,6 +618,7 @@ func DeleteOmittedFields(client *pluginapi.Client, groupID, pluginID string, use
 				"field_name", field.Name,
 				"field_id", field.ID,
 				"error", err.Error())
+			failed++
 			return
 		}
 		if err := client.Property.DeletePropertyField(groupID, field.ID); err != nil {
@@ -623,6 +626,7 @@ func DeleteOmittedFields(client *pluginapi.Client, groupID, pluginID string, use
 				"field_name", field.Name,
 				"field_id", field.ID,
 				"error", err.Error())
+			failed++
 			return
 		}
 		summary.FieldsDeleted++
@@ -640,6 +644,9 @@ func DeleteOmittedFields(client *pluginapi.Client, groupID, pluginID string, use
 		if field.ObjectType == model.PropertyFieldObjectTypeTemplate {
 			deleteField(field)
 		}
+	}
+	if failed > 0 {
+		return errors.Errorf("failed to delete %d field(s)", failed)
 	}
 	return nil
 }

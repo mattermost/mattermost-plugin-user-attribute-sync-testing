@@ -220,3 +220,28 @@ test('shows the sync summary after delete and states that attributes are removed
     expect(screen.getByText('Channels synced: 0')).toBeInTheDocument();
     expect(screen.getByText('No file on server')).toBeInTheDocument();
 });
+
+test('keeps the file and rechecks status when delete fails', async () => {
+    fetchMock.mockImplementation((_url: RequestInfo, init?: RequestInit) => {
+        if (requestMethod(init) === 'DELETE') {
+            return Promise.resolve({
+                ok: false,
+                status: 500,
+                json: () => Promise.resolve({error: 'attribute removal failed, file kept so the delete can be retried: boom'}),
+            });
+        }
+        return Promise.resolve(jsonResponse({exists: true, lastUpdated: '2026-09-15T12:00:00.000Z'}));
+    });
+
+    await renderPanel();
+    fireEvent.click(screen.getByRole('button', {name: 'Delete'}));
+    await act(async () => {
+        fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', {name: 'Delete'}));
+    });
+
+    expect(await screen.findByText('attribute removal failed, file kept so the delete can be retried: boom')).toBeInTheDocument();
+    const statusChecks = fetchMock.mock.calls.filter(([url]) => String(url).includes('/attributes/status'));
+    expect(statusChecks).toHaveLength(2);
+    expect(screen.getByRole('button', {name: 'Delete'})).toBeEnabled();
+    expect(screen.queryByText('File Deleted')).not.toBeInTheDocument();
+});

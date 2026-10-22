@@ -248,6 +248,9 @@ export default function UploadUserAttributes({id, disabled = false}: Props) {
 
             const body = await response.json().catch(() => ({}));
             if (!response.ok) {
+                // A failed delete normally keeps the file, but a failure after the
+                // fields are gone may not, so ask rather than assume.
+                await checkServerFileStatus();
                 throw new Error(body.error ?? `Delete failed (${response.status})`);
             }
 
