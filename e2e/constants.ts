@@ -34,21 +34,15 @@ export const pluginID = 'com.mattermost.user-attribute-sync-test-tool';
 export const pluginSettingsURL = `${baseURL}/admin_console/plugins/plugin_${pluginID}`;
 
 // Plugin REST routes, registered in server/http_hooks.go.
-export const userAttributesURL = `${baseURL}/plugins/${pluginID}/user_attributes`;
-export const userAttributesStatusURL = `${userAttributesURL}/status`;
-
-// Values of the AttributeProvider setting, mirroring the constants in
-// server/configuration.go.
-export const providerFile = 'FileProvider';
-export const providerKVStore = 'KVStore';
+export const attributesURL = `${baseURL}/plugins/${pluginID}/attributes`;
+export const attributesStatusURL = `${attributesURL}/status`;
 
 // Fixture files.
 //
-// The valid case deliberately reuses the repository's own documented sample file
-// rather than a copy, so the tests keep proving that the file shipped in `data/`
-// is actually uploadable. The invalid cases live in `assets/` because they have
-// no other home.
-export const validAttributesFile = '../data/user_attributes.json';
-export const notAnArrayFile = './assets/wrong_shape_not_an_array.json';
-export const arrayOfArraysFile = './assets/wrong_shape_array_of_arrays.json';
+// The valid case is user-only rather than the repository's `data/attributes.json`:
+// that file carries channel and graph fields, which create or skip depending on the
+// server's license tier and feature flags, and the specs assert exact field counts.
+export const validAttributesFile = './assets/attributes.json';
+export const legacyArrayFile = './assets/legacy_array.json';
+export const wrongVersionFile = './assets/wrong_version.json';
 export const malformedFile = './assets/malformed.json';

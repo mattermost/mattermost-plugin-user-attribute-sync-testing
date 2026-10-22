@@ -17,6 +17,19 @@ type FieldIDCache struct {
 	// Maps option names (e.g., "Apples") to Mattermost option IDs for all select/multiselect/rank fields
 	// Option names are prefixed with field names to avoid name collision.
 	OptionNameToID map[string]string
+	// Maps external field names to the type the server returned for the field —
+	// the declared type for an unlinked field, the template's for a linked one —
+	// so value sync can tell a rank/select string (write the option ID) from
+	// text or date (write the string).
+	FieldNameToType map[string]model.PropertyFieldType
+}
+
+func NewFieldIDCache() *FieldIDCache {
+	return &FieldIDCache{
+		FieldNameToID:   make(map[string]string),
+		OptionNameToID:  make(map[string]string),
+		FieldNameToType: make(map[string]model.PropertyFieldType),
+	}
 }
 
 // GetFieldID translates an external field name to its Mattermost field ID.
@@ -30,137 +43,121 @@ func (c *FieldIDCache) GetOptionID(fieldName, optionName string) string {
 	return c.OptionNameToID[fieldName+"|"+optionName]
 }
 
-// fieldDefinition defines a user attribute field schema.
-type fieldDefinition struct {
+func (c *FieldIDCache) GetFieldType(fieldName string) model.PropertyFieldType {
+	return c.FieldNameToType[fieldName]
+}
+
+type FieldDefinition struct {
 	// Name is the canonical field identifier. It must match ^[A-Za-z_][A-Za-z0-9_]*$
 	// because Mattermost references the name from ABAC policy expressions as
 	// user.attributes.<name> (a CEL identifier), so spaces and punctuation are
 	// rejected. We also use this name as the lookup key when matching attributes
 	// from the external data source — the JSON file's keys must match these names.
-	Name string
+	Name string `json:"name"`
 
 	// DisplayName is the human-readable label shown in user-facing UI. Free-form
 	// text; no character restrictions.
-	DisplayName string
+	DisplayName string `json:"display_name"`
 
-	Type    model.PropertyFieldType                     // Field type (text, date, multiselect, etc.)
-	Options []model.CustomProfileAttributesSelectOption // Options for select, multiselect, and rank fields
-	// AccessMode controls who can read this field's values. Three modes:
-	//   - Public (empty string): Everyone can read all field options and values
-	//   - SourceOnly: Only this plugin can read values; others see empty options and no values
-	//   - SharedOnly: Users only see field options and values they share with the target user
-	//                 (Only valid for select/multiselect/rank fields. Example: If Alice selected
-	//                  [Apples, Bananas] and Bob selected [Bananas, Oranges], Alice querying
-	//                  Bob's values would only see [Bananas]).
-	// 					Note: Ranks will see their own ranks and lower.
-	AccessMode string
+	Type    model.PropertyFieldType                     `json:"type"`
+	Options []model.CustomProfileAttributesSelectOption `json:"options,omitempty"`
+	// The document may write "public" for the empty-string mode; accessMode()
+	// translates that, because the server rejects the literal "public".
+	// SharedOnly is only valid for select, multiselect, and rank; on rank, a
+	// user sees their own rank and lower.
+	AccessMode string `json:"access_mode,omitempty"`
+
+	// Template names an entry in the document's fields.template list; empty means
+	// the field is not linked.
+	Template string `json:"template,omitempty"`
+
+	Visibility        string `json:"visibility,omitempty"`
+	PermissionField   string `json:"permission_field,omitempty"`
+	PermissionValues  string `json:"permission_values,omitempty"`
+	PermissionOptions string `json:"permission_options,omitempty"`
 }
 
-// fieldDefinitions contains all user attribute fields this plugin creates.
-// These are per-user metadata fields stored in the access_control property
-// group, so they appear on user profiles and can also be referenced from
-// attribute-based access control (ABAC) policy rules. This plugin ensures
-// these fields exist on startup and syncs external data into them.
-//
-// The four fields below cover the three access modes between them, so a test environment gets one
-// of each. Edit this array to create the attributes a particular test needs.
-//
-// All fields are marked as "protected" (see createField function), which means:
-//   - Only this plugin can modify the field structure (add/remove options, change types)
-//   - Only this plugin can write values (users and admins cannot manually edit)
-//   - Access modes control read permissions (who can see the data)
-var fieldDefinitions = []fieldDefinition{
-	{
-		// Public: readable by everyone, while still being plugin-managed and not admin-editable.
-		Name:        "job_title",
-		DisplayName: "Job Title",
-		Type:        model.PropertyFieldTypeText,
-		AccessMode:  model.PropertyAccessModePublic,
-	},
-	{
-		// Shared-only on a multiselect: viewing another user's profile shows only the programs
-		// both users are in.
-		Name:        "programs",
-		DisplayName: "Programs",
-		Type:        model.PropertyFieldTypeMultiselect,
-		Options: []model.CustomProfileAttributesSelectOption{
-			{Name: "Apples"},
-			{Name: "Oranges"},
-			{Name: "Lemons"},
-			{Name: "Grapes"},
-		},
-		AccessMode: model.PropertyAccessModeSharedOnly,
-	},
-	{
-		// Shared-only on a rank field (requires Mattermost server v11.9 or later). Rank is like
-		// Select, except each option carries a number, so policies can compare with inequalities
-		// (e.g. Clearance >= "Secret"). On a rank field, a user sees their own level and lower.
-		Name:        "clearance",
-		DisplayName: "Clearance",
-		Type:        model.PropertyFieldTypeRank,
-		Options: []model.CustomProfileAttributesSelectOption{
-			{Name: "CUI", Rank: model.NewPointer(1)},
-			{Name: "Confidential", Rank: model.NewPointer(2)},
-			{Name: "Secret", Rank: model.NewPointer(3)},
-			{Name: "Top Secret", Rank: model.NewPointer(4)},
-		},
-		AccessMode: model.PropertyAccessModeSharedOnly,
-	},
-	{
-		// Source-only: only this plugin can read the values. Admins, integrations, and the user
-		// themselves see nothing.
-		Name:        "start_date",
-		DisplayName: "Start Date",
-		Type:        model.PropertyFieldTypeDate,
-		AccessMode:  model.PropertyAccessModeSourceOnly,
-	},
-}
-
-// fieldDefinitionsByName indexes fieldDefinitions by Name so value sync can
-// look up a field's definition from the key it sees in the external data.
-// Go initializes package-level variables in dependency order, so this is
-// populated after fieldDefinitions regardless of declaration order.
-var fieldDefinitionsByName = indexFieldDefinitions(fieldDefinitions)
-
-func indexFieldDefinitions(defs []fieldDefinition) map[string]fieldDefinition {
-	byName := make(map[string]fieldDefinition, len(defs))
-	for _, def := range defs {
-		byName[def.Name] = def
+func (d FieldDefinition) visibility() string {
+	if d.Visibility == "" {
+		return model.PropertyFieldVisibilityAlways
 	}
-	return byName
+	return d.Visibility
 }
 
-// updateField updates an existing user attribute field to match the definition.
-// Returns the updated field.
+// Banner, header labels, and channel-info chips. Hardcoded on every field;
+// document plumbing if a field ever needs a subset.
+var displayActions = []interface{}{
+	model.PropertyFieldActionDisplayBannerTop,
+	model.PropertyFieldActionDisplayLabelHeader,
+	model.PropertyFieldActionDisplayLabelInfo,
+}
+
+func (d FieldDefinition) accessMode() string {
+	if d.AccessMode == "" || d.AccessMode == "public" {
+		return model.PropertyAccessModePublic
+	}
+	return d.AccessMode
+}
+
+func (d FieldDefinition) permissionField() *model.PermissionLevel {
+	return permissionLevelPtr(d.PermissionField)
+}
+
+func (d FieldDefinition) permissionValues() *model.PermissionLevel {
+	return permissionLevelPtr(d.PermissionValues)
+}
+
+func (d FieldDefinition) permissionOptions() *model.PermissionLevel {
+	return permissionLevelPtr(d.PermissionOptions)
+}
+
+// permissionLevelPtr defaults to sysadmin. Shared_only rejects a member-level
+// PermissionValues (members edit their own value): anyone could pick any value and
+// fake sharing it, so PermissionValues defaults to sysadmin to clear that check.
+// PermissionField and PermissionOptions are pinned to sysadmin by the server for
+// access_control fields, and default the same way so all three read identically.
+func permissionLevelPtr(value string) *model.PermissionLevel {
+	level := model.PermissionLevelSysadmin
+	if value != "" {
+		level = model.PermissionLevel(value)
+	}
+	return &level
+}
+
 func updateField(
 	client *pluginapi.Client,
 	groupID string,
 	existingField *model.PropertyField,
-	def fieldDefinition,
+	def FieldDefinition,
 	cache *FieldIDCache,
 ) (*model.PropertyField, error) {
 	client.Log.Info("Field exists, updating to match definition",
 		"field_id", existingField.ID,
 		"name", def.Name)
 
-	existingField.Type = def.Type
-	existingField.Attrs[model.PropertyFieldAttrVisibility] = model.PropertyFieldVisibilityAlways
+	// A linked field's type, options, and access mode belong to its template:
+	// the server rejects an update that changes them, and a linked definition
+	// declares none, so writing them would send empty values read as changes.
+	// LinkedFieldID is likewise left as the server returned it — a link can
+	// only be set at create.
+	if def.Template == "" {
+		existingField.Type = def.Type
+		existingField.Attrs[model.PropertyAttrsAccessMode] = def.accessMode()
+		if def.Type.SupportsOptions() {
+			options, err := buildOptionsArr(def, cache)
+			if err != nil {
+				return nil, errors.Wrapf(err, "failed to update existing field %s", def.Name)
+			}
+			existingField.Attrs[model.PropertyFieldAttributeOptions] = options
+		}
+	}
+	existingField.Attrs[model.PropertyFieldAttrVisibility] = def.visibility()
 	existingField.Attrs[model.PropertyFieldAttrDisplayName] = def.DisplayName
 	existingField.Attrs[model.PropertyAttrsProtected] = true
-	existingField.Attrs[model.PropertyAttrsAccessMode] = def.AccessMode
-	// See createField for why all three permission levels are set to sysadmin.
-	sysadmin := model.PermissionLevelSysadmin
-	existingField.PermissionField = &sysadmin
-	existingField.PermissionValues = &sysadmin
-	existingField.PermissionOptions = &sysadmin
-
-	if def.Type.SupportsOptions() {
-		options, err := buildOptionsArr(def, cache)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to update existing field %s", def.Name)
-		}
-		existingField.Attrs[model.PropertyFieldAttributeOptions] = options
-	}
+	existingField.Attrs[model.PropertyFieldAttrActions] = displayActions
+	existingField.PermissionField = def.permissionField()
+	existingField.PermissionValues = def.permissionValues()
+	existingField.PermissionOptions = def.permissionOptions()
 
 	updatedField, err := client.Property.UpdatePropertyField(groupID, existingField)
 	if err != nil {
@@ -171,7 +168,7 @@ func updateField(
 	return updatedField, nil
 }
 
-func buildOptionsArr(def fieldDefinition, cache *FieldIDCache) ([]interface{}, error) {
+func buildOptionsArr(def FieldDefinition, cache *FieldIDCache) ([]interface{}, error) {
 	options := make([]model.CustomProfileAttributesSelectOption, len(def.Options))
 	for i, option := range def.Options {
 		// Add in ID if it's already in the cache, otherwise Mattermost will generate a new one
@@ -202,60 +199,41 @@ func buildOptionsArr(def fieldDefinition, cache *FieldIDCache) ([]interface{}, e
 	return optionsArr, nil
 }
 
-// createField creates a new user attribute field from the definition.
-// Returns the newly created field.
 func createField(
 	client *pluginapi.Client,
 	groupID string,
-	def fieldDefinition,
+	objectType string,
+	def FieldDefinition,
+	linkedFieldID *string,
 ) (*model.PropertyField, error) {
 	client.Log.Info("Field does not exist, creating", "name", def.Name)
 
-	// These three permission levels describe who, role-wise, can edit the
-	// field definition (PermissionField), write a user's value
-	// (PermissionValues), or change the multiselect options (PermissionOptions).
-	//
-	// For this plugin they're largely a formality: every field we create is
-	// protected, so only the plugin can write through the source_plugin_id
-	// mechanism, and source_only/shared_only access modes already restrict
-	// who can read the values — even admins can't see source_only fields.
-	// Mattermost also pins PermissionField and PermissionOptions to sysadmin
-	// itself for any field in the access_control group, so those two are
-	// truly no-ops here.
-	//
-	// Even so, our shared_only field forces us to set PermissionValues. The
-	// default for user fields lets members edit their own value, and
-	// Mattermost rejects that combined with shared_only — if anyone could
-	// pick any value, they could fake having something in common with
-	// anyone. Setting PermissionValues to sysadmin clears that check. We
-	// set the other two to sysadmin alongside it so all three read the same
-	// way.
-	sysadmin := model.PermissionLevelSysadmin
-
 	field := &model.PropertyField{
-		// ID left empty - Mattermost will auto-generate
 		GroupID:           groupID,
 		Name:              def.Name,
 		Type:              def.Type,
-		PermissionField:   &sysadmin,
-		PermissionValues:  &sysadmin,
-		PermissionOptions: &sysadmin,
+		PermissionField:   def.permissionField(),
+		PermissionValues:  def.permissionValues(),
+		PermissionOptions: def.permissionOptions(),
 
-		// ObjectType declares what kind of object this field describes. This is a
-		// user attribute sync plugin, so every field describes users and we pin
-		// ObjectType to "user". Mattermost uses this to route field queries — for
+		// ObjectType declares what kind of object this field describes ("user"
+		// or "channel"). Mattermost uses it to route field queries — for
 		// example, the user-profile UI asks for fields with ObjectType=user, and
 		// ABAC policy evaluation looks up user.attributes.<field> against the
 		// same set.
-		ObjectType: model.PropertyFieldObjectTypeUser,
+		ObjectType: objectType,
 
 		// TargetType declares the scope at which the field definition lives.
 		// "system" means the field is defined once globally and applies to every
-		// user on the server. The other options ("team", "channel") would scope
-		// the field to a specific team or channel, which is not what we want for
-		// org-wide profile attributes. With TargetType=system, TargetID must be
-		// empty (the system has no per-entity ID).
+		// object of its type on the server. The other options ("team", "channel")
+		// would scope the field to a specific team or channel, which is not what
+		// we want for org-wide attributes. With TargetType=system, TargetID must
+		// be empty (the system has no per-entity ID).
 		TargetType: string(model.PropertyFieldTargetLevelSystem),
+
+		// Non-nil only for a field linked to a template; the server then copies
+		// type, options, and access mode from the template.
+		LinkedFieldID: linkedFieldID,
 
 		Attrs: model.StringInterface{
 			// DisplayName is the user-facing label rendered in profile cards and the
@@ -263,11 +241,8 @@ func createField(
 			// contain spaces or punctuation, so anything human-readable lives here.
 			model.PropertyFieldAttrDisplayName: def.DisplayName,
 
-			// Visibility controls whether values appear in the UI (user profiles/cards).
-			// This does NOT affect data access via API - use AccessMode for that.
-			// "Always" makes values visible in the UI. "Hidden" hides them from UI but
-			// data can still be retrieved via API (subject to AccessMode permissions).
-			model.PropertyFieldAttrVisibility: model.PropertyFieldVisibilityAlways,
+			// Visibility is UI-only; AccessMode is who can read via API.
+			model.PropertyFieldAttrVisibility: def.visibility(),
 
 			// Protected means only this plugin can:
 			//   - Modify field structure (add/remove options, change field type)
@@ -276,15 +251,20 @@ func createField(
 			// synchronized from an external source. Required for non-public access modes.
 			model.PropertyAttrsProtected: true,
 
-			// AccessMode controls read permissions (who can see values via API and UI).
-			// Works in conjunction with "protected" to provide complete access control.
-			// See fieldDefinition.AccessMode for details on the three modes.
-			model.PropertyAttrsAccessMode: def.AccessMode,
+			model.PropertyFieldAttrActions: displayActions,
 		},
 	}
 
+	// A linked field inherits access mode and options from its template: the
+	// server overwrites whatever is sent, and rejects a create that sends
+	// options for a graph-typed template.
+	if linkedFieldID == nil {
+		// See FieldDefinition.AccessMode for details on the three modes.
+		field.Attrs[model.PropertyAttrsAccessMode] = def.accessMode()
+	}
+
 	// Select / Multiselect / Rank fields need their options defined
-	if def.Type.SupportsOptions() {
+	if linkedFieldID == nil && def.Type.SupportsOptions() {
 		// No need to pass in a cache when creating a new field
 		options, err := buildOptionsArr(def, nil)
 		if err != nil {
@@ -302,65 +282,109 @@ func createField(
 	return createdField, nil
 }
 
-// isFieldOwnedByPlugin checks if an existing field is owned and managed by this plugin
-// by verifying the source_plugin_id attribute matches our plugin ID.
+// An admin-created field has no source_plugin_id; a non-string attribute is
+// treated the same — both look unowned.
+func fieldSourcePluginID(field *model.PropertyField) string {
+	raw, ok := field.Attrs[model.PropertyAttrsSourcePluginID]
+	if !ok {
+		return ""
+	}
+	id, ok := raw.(string)
+	if !ok {
+		return ""
+	}
+	return id
+}
+
 func isFieldOwnedByPlugin(
 	client *pluginapi.Client,
 	existingField *model.PropertyField,
 	pluginID string,
-	def fieldDefinition,
+	def FieldDefinition,
 ) bool {
-	sourcePluginID, hasSource := existingField.Attrs[model.PropertyAttrsSourcePluginID]
-	if !hasSource {
-		// No source plugin ID - field was created by admin or other means
+	sourceID := fieldSourcePluginID(existingField)
+	if sourceID == pluginID {
+		return true
+	}
+	if sourceID == "" {
 		client.Log.Error("Field already exists but has no source_plugin_id (likely created by admin)",
 			"field_name", def.Name,
 			"field_id", existingField.ID)
 		return false
 	}
 
-	sourceID, ok := sourcePluginID.(string)
-	if !ok || sourceID != pluginID {
-		// Field is owned by a different plugin
-		client.Log.Error("Field already exists but is owned by another plugin",
-			"field_name", def.Name,
-			"field_id", existingField.ID,
-			"owner_plugin_id", sourceID)
-		return false
-	}
-
-	// Source plugin ID matches ours
-	return true
+	client.Log.Error("Field already exists but is owned by another plugin",
+		"field_name", def.Name,
+		"field_id", existingField.ID,
+		"owner_plugin_id", sourceID)
+	return false
 }
 
-// syncSingleField ensures a single user attribute field exists and matches the definition.
-// Updates the cache with field and option IDs. Returns the field ID or error.
+// syncSingleField creates or updates one field. existingField is the lookup
+// result for def.Name, nil when no field of that name and object type exists.
+// templateIDs maps template names to their server-generated field IDs.
 func syncSingleField(
 	client *pluginapi.Client,
 	groupID string,
 	pluginID string,
-	def fieldDefinition,
+	objectType string,
+	def FieldDefinition,
+	templateIDs map[string]string,
+	existingField *model.PropertyField,
 	cache *FieldIDCache,
-) (string, error) {
-	// Try to get existing field
-	existingField, err := client.Property.GetPropertyFieldByName(groupID, "", def.Name)
+) (string, bool, error) {
+	// A template name the map does not contain fails this field only. Creating
+	// the field unlinked instead would create something the document never
+	// asked for.
+	var linkedFieldID *string
+	if def.Template != "" {
+		id, ok := templateIDs[def.Template]
+		if !ok {
+			return "", false, errors.Errorf("field %s links to unknown template %s", def.Name, def.Template)
+		}
+		linkedFieldID = &id
+	}
 
 	var field *model.PropertyField
-	if err == nil && existingField != nil {
-		// Field exists - verify we own it before attempting to update
+	created := false
+	if existingField != nil {
 		if !isFieldOwnedByPlugin(client, existingField, pluginID, def) {
-			return "", errors.Errorf(
+			return "", false, errors.Errorf(
 				"field %s already exists but is not managed by this plugin",
 				def.Name)
 		}
 
+		// A link can only be set at create and the server cannot repoint one,
+		// so a link-state change deletes the field (values first) and falls
+		// through to the create path; its values go with it. The server can
+		// unlink in place, but that keeps the template's options instead of the
+		// ones the document declares, so it is not used.
+		wantedLink := ""
+		if linkedFieldID != nil {
+			wantedLink = *linkedFieldID
+		}
+		if existingField.LinkSourceID() != wantedLink {
+			if err := client.Property.DeletePropertyValuesForField(groupID, existingField.ID); err != nil {
+				return "", false, errors.Wrapf(err, "failed to delete values for field %s before recreating it", def.Name)
+			}
+			if err := client.Property.DeletePropertyField(groupID, existingField.ID); err != nil {
+				return "", false, errors.Wrapf(err, "failed to delete field %s before recreating it", def.Name)
+			}
+			client.Log.Info("Deleted field whose link state changed, recreating",
+				"field_id", existingField.ID,
+				"name", def.Name)
+			existingField = nil
+		}
+	}
+
+	if existingField != nil {
 		// The server already assigned IDs to this field's options, and the cache is
 		// empty on every activation. Load them before building the update payload so
 		// buildOptionsArr sends the existing IDs back - otherwise the server mints new
-		// ones and every stored user value is left pointing at an option that no
+		// ones and every stored value is left pointing at an option that no
 		// longer exists.
 		if def.Type.SupportsOptions() && len(def.Options) > 0 {
-			if err = extractOptionIDs(client, existingField, def, cache); err != nil {
+			if err := extractOptionIDs(client, existingField, def, cache); err != nil {
 				client.Log.Warn("Failed to read existing option IDs",
 					"name", def.Name,
 					"field_id", existingField.ID,
@@ -369,34 +393,40 @@ func syncSingleField(
 			}
 		}
 
-		// Field exists and we own it - update it
+		var err error
 		field, err = updateField(client, groupID, existingField, def, cache)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 	} else {
-		// Field doesn't exist - create it
-		field, err = createField(client, groupID, def)
+		var err error
+		field, err = createField(client, groupID, objectType, def, linkedFieldID)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
+		created = true
 	}
 
-	// Store the field name to ID mapping
 	cache.FieldNameToID[def.Name] = field.ID
+	// The type comes from the server-returned field, not the definition: a
+	// linked definition declares none, and the returned field carries the
+	// template's.
+	cache.FieldNameToType[def.Name] = field.Type
 
-	// For supported field types, extract option IDs
-	if def.Type.SupportsOptions() && len(def.Options) > 0 {
+	// A linked field's options are the template's, copied onto the returned
+	// field by the server — so extract from it whenever the field can carry
+	// options, not only when the definition declared some. An unlinked field
+	// declaring no options has no options attribute to read.
+	if field.Type.SupportsOptions() && (def.Template != "" || len(def.Options) > 0) {
 		if err := extractOptionIDs(client, field, def, cache); err != nil {
 			client.Log.Error("Failed to extract option IDs",
 				"name", def.Name,
 				"field_id", field.ID,
 				"error", err.Error())
-			// Don't fail the entire sync, just log the error
 		}
 	}
 
-	return field.ID, nil
+	return field.ID, created, nil
 }
 
 // extractOptionIDs extracts option IDs from a field into the cache (if applicable).
@@ -404,7 +434,7 @@ func syncSingleField(
 func extractOptionIDs(
 	client *pluginapi.Client,
 	field *model.PropertyField,
-	def fieldDefinition,
+	def FieldDefinition,
 	cache *FieldIDCache,
 ) error {
 	// Extract option IDs from the field attributes
@@ -447,29 +477,46 @@ func extractOptionIDs(
 	return nil
 }
 
-// SyncFields ensures all user attribute fields exist and match the definitions.
-// Returns a FieldIDCache containing mappings from external names to Mattermost-generated IDs.
-//
 //nolint:revive
-func SyncFields(client *pluginapi.Client, groupID string, pluginID string) (*FieldIDCache, error) {
-	client.Log.Info("Syncing field definitions", "field_count", len(fieldDefinitions))
+func SyncFields(client *pluginapi.Client, groupID, pluginID, objectType string, defs []FieldDefinition, templateIDs map[string]string, summary *Summary) (*FieldIDCache, error) {
+	client.Log.Info("Syncing field definitions", "field_count", len(defs))
 
-	cache := &FieldIDCache{
-		FieldNameToID:  make(map[string]string),
-		OptionNameToID: make(map[string]string),
-	}
+	cache := NewFieldIDCache()
 
 	var failedFields []string
 
-	for _, def := range fieldDefinitions {
-		_, err := syncSingleField(client, groupID, pluginID, def, cache)
-		if err != nil {
-			client.Log.Error("Failed to sync field",
-				"name", def.Name,
-				"error", err.Error())
+	// GetPropertyFieldByName is not object-type aware, so existing fields are
+	// looked up with an ObjectTypes-filtered search instead. A failed search is
+	// not "the fields do not exist" — creating anyway would duplicate them — so
+	// every def is skipped.
+	fields, err := searchGroupFields(client, groupID, []string{objectType})
+	if err != nil {
+		client.Log.Error("Failed to look up existing fields, skipping field sync",
+			"object_type", objectType,
+			"error", err.Error())
+		for _, def := range defs {
 			failedFields = append(failedFields, def.Name)
-			// Continue with next field for graceful degradation
-			continue
+		}
+	} else {
+		existing := make(map[string]*model.PropertyField, len(fields))
+		for _, field := range fields {
+			existing[field.Name] = field
+		}
+
+		for _, def := range defs {
+			_, created, err := syncSingleField(client, groupID, pluginID, objectType, def, templateIDs, existing[def.Name], cache)
+			if err != nil {
+				client.Log.Error("Failed to sync field",
+					"name", def.Name,
+					"error", err.Error())
+				failedFields = append(failedFields, def.Name)
+				continue
+			}
+			if created {
+				summary.FieldsCreated++
+			} else {
+				summary.FieldsUpdated++
+			}
 		}
 	}
 
@@ -477,14 +524,129 @@ func SyncFields(client *pluginapi.Client, groupID string, pluginID string) (*Fie
 		client.Log.Warn("Some fields failed to sync",
 			"failed_count", len(failedFields),
 			"failed_fields", failedFields)
-		// Return partial cache even on failures
 	}
+	summary.FieldsSkipped += len(failedFields)
 
 	client.Log.Info("Field sync completed",
-		"total", len(fieldDefinitions),
+		"total", len(defs),
 		"failed", len(failedFields),
 		"fields_cached", len(cache.FieldNameToID),
 		"options_cached", len(cache.OptionNameToID))
 
 	return cache, nil
+}
+
+const fieldSearchPerPage = 100
+
+// searchGroupFields pages through every field in the group whose object type is
+// in objectTypes. An empty objectTypes returns every field in the group.
+func searchGroupFields(client *pluginapi.Client, groupID string, objectTypes []string) ([]*model.PropertyField, error) {
+	var all []*model.PropertyField
+	var cursor model.PropertyFieldSearchCursor
+	for {
+		opts := model.PropertyFieldSearchOpts{
+			PerPage:     fieldSearchPerPage,
+			ObjectTypes: objectTypes,
+			Cursor:      cursor,
+		}
+		fields, err := client.Property.SearchPropertyFields(groupID, opts)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to search property fields")
+		}
+		all = append(all, fields...)
+
+		if len(fields) < fieldSearchPerPage {
+			return all, nil
+		}
+		last := fields[len(fields)-1]
+		cursor = model.PropertyFieldSearchCursor{
+			PropertyFieldID: last.ID,
+			CreateAt:        last.CreateAt,
+		}
+	}
+}
+
+// Values are deleted before the field so the server can authorize the value
+// delete against a live field.
+//
+// The keep-set is keyed by object type and name: a user field, a channel
+// field, and a template may share a name, and the document may define one
+// without the others.
+//
+// Non-template fields are deleted before templates: the server refuses to
+// delete a template that still has linked dependents, and only user and
+// channel fields can link to one. A template delete that still fails (a
+// dependent the document keeps) is logged and skipped, leaving both fields.
+//
+// A per-field delete failure is logged and the pass moves on to the next
+// field, then the pass returns an error counting the failures. A failed field
+// search returns immediately, since nothing can be deleted without it.
+func DeleteOmittedFields(client *pluginapi.Client, groupID, pluginID string, userDefs, channelDefs, templateDefs []FieldDefinition, summary *Summary) error {
+	named := make(map[string]struct{}, len(userDefs)+len(channelDefs)+len(templateDefs))
+	for _, def := range userDefs {
+		named[model.PropertyFieldObjectTypeUser+"|"+def.Name] = struct{}{}
+	}
+	for _, def := range channelDefs {
+		named[model.PropertyFieldObjectTypeChannel+"|"+def.Name] = struct{}{}
+	}
+	for _, def := range templateDefs {
+		named[model.PropertyFieldObjectTypeTemplate+"|"+def.Name] = struct{}{}
+	}
+
+	fields, err := searchGroupFields(client, groupID, nil)
+	if err != nil {
+		return err
+	}
+
+	failed := 0
+	deleteField := func(field *model.PropertyField) {
+		if _, keep := named[field.ObjectType+"|"+field.Name]; keep {
+			return
+		}
+
+		owner := fieldSourcePluginID(field)
+		if owner != pluginID {
+			client.Log.Debug("Skipping field not owned by this plugin",
+				"field_name", field.Name,
+				"field_id", field.ID,
+				"owner_plugin_id", owner)
+			return
+		}
+
+		if err := client.Property.DeletePropertyValuesForField(groupID, field.ID); err != nil {
+			client.Log.Error("Failed to delete values for omitted field",
+				"field_name", field.Name,
+				"field_id", field.ID,
+				"error", err.Error())
+			failed++
+			return
+		}
+		if err := client.Property.DeletePropertyField(groupID, field.ID); err != nil {
+			client.Log.Error("Failed to delete omitted field",
+				"field_name", field.Name,
+				"field_id", field.ID,
+				"error", err.Error())
+			failed++
+			return
+		}
+		summary.FieldsDeleted++
+		client.Log.Info("Deleted omitted field",
+			"field_name", field.Name,
+			"field_id", field.ID)
+	}
+
+	for _, field := range fields {
+		if field.ObjectType != model.PropertyFieldObjectTypeTemplate {
+			deleteField(field)
+		}
+	}
+	for _, field := range fields {
+		if field.ObjectType == model.PropertyFieldObjectTypeTemplate {
+			deleteField(field)
+		}
+	}
+	if failed > 0 {
+		return errors.Errorf("failed to delete %d field(s)", failed)
+	}
+	return nil
 }

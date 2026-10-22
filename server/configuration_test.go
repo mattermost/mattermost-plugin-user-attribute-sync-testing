@@ -11,9 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestOnConfigurationChange tests that the config loaded from the server is applied, and that it
-// leaves the attribute provider alone even though a setting names one — the sync job builds it,
-// see ensureAttributeProvider.
+// TestOnConfigurationChange tests that the config loaded from the server is applied.
 func TestOnConfigurationChange(t *testing.T) {
 	api := &plugintest.API{}
 	defer api.AssertExpectations(t)
@@ -22,10 +20,7 @@ func TestOnConfigurationChange(t *testing.T) {
 	// mock has to do the same rather than just return.
 	api.On("LoadPluginConfiguration", mock.AnythingOfType("*main.configuration")).
 		Run(func(args mock.Arguments) {
-			*args.Get(0).(*configuration) = configuration{
-				SyncIntervalMinutes: 30,
-				AttributeProvider:   ConfigAttributeProviderKVStore,
-			}
+			*args.Get(0).(*configuration) = configuration{}
 		}).Return(nil).Once()
 
 	p := &Plugin{
@@ -34,9 +29,5 @@ func TestOnConfigurationChange(t *testing.T) {
 	}
 
 	require.NoError(t, p.OnConfigurationChange())
-
-	cfg := p.getConfiguration()
-	assert.Equal(t, 30, cfg.SyncIntervalMinutes)
-	assert.Equal(t, ConfigAttributeProviderKVStore, cfg.AttributeProvider)
-	assert.Nil(t, p.attributeProvider, "the provider is the sync job's to build, not this hook's")
+	assert.NotNil(t, p.getConfiguration())
 }

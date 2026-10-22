@@ -9,10 +9,9 @@ export default defineConfig({
     globalSetup: require.resolve('./global-setup'),
     globalTeardown: require.resolve('./global-teardown'),
 
-    // Single worker, deliberately: saving an admin console setting is a
-    // read-modify-write of the server-wide /api/v4/config document (see
-    // apiSetPluginSetting in utils.ts), so parallel workers would discard one
-    // another's changes.
+    // Single worker, deliberately: the stored attributes file is one KV value
+    // shared by every test, so parallel workers would upload and delete
+    // underneath one another.
     //
     // If your suite outgrows one worker, take a filesystem lock around the tests
     // that mutate config and leave the rest parallel. mattermost-plugin-calls

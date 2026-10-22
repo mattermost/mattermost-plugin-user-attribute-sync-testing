@@ -1,99 +1,68 @@
 package main
 
 import (
-	"errors"
 	"testing"
+	"time"
 
+	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mattermost/mattermost-plugin-user-attribute-sync-testing/server/sync"
 )
 
-// closeRecorder is a no-op AttributeProvider that records whether it was closed, and fails to
-// close if closeErr is set.
-type closeRecorder struct {
-	closed   bool
-	closeErr error
-}
-
-func (c *closeRecorder) GetUserAttributes() ([]map[string]interface{}, error) {
-	return nil, nil
-}
-
-func (c *closeRecorder) Close() error {
-	c.closed = true
-	return c.closeErr
-}
-
-// TestNewAttributeProvider tests that each configured value maps to the right provider, and that an
-// unrecognized value panics rather than syncing nothing silently.
-func TestNewAttributeProvider(t *testing.T) {
-	p := &Plugin{client: pluginapi.NewClient(&plugintest.API{}, &plugintest.Driver{})}
-
-	t.Run("file provider", func(t *testing.T) {
-		require.IsType(t, &sync.FileProvider{}, p.newAttributeProvider(ConfigAttributeProviderFile))
-	})
-
-	t.Run("kv store provider", func(t *testing.T) {
-		require.IsType(t, &sync.KVStoreProvider{}, p.newAttributeProvider(ConfigAttributeProviderKVStore))
-	})
-
-	t.Run("unrecognized provider", func(t *testing.T) {
-		require.Panics(t, func() { p.newAttributeProvider("SomeOtherProvider") })
-	})
-}
-
-// TestEnsureAttributeProvider tests the reconciliation the sync job performs on every run: build
-// the configured provider once, keep it while the setting is unchanged, and close it when the
-// setting names a different one.
-func TestEnsureAttributeProvider(t *testing.T) {
-	newPlugin := func(t *testing.T, provider string) *Plugin {
+func TestRunSync(t *testing.T) {
+	newPlugin := func(t *testing.T) (*Plugin, *plugintest.API) {
 		t.Helper()
 
 		api := &plugintest.API{}
 		t.Cleanup(func() { api.AssertExpectations(t) })
 		mockLogs(api)
 
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
 		return &Plugin{
-			client:        pluginapi.NewClient(api, &plugintest.Driver{}),
-			configuration: &configuration{AttributeProvider: provider},
-		}
+			client:   client,
+			groupID:  "group-id",
+			syncLock: newTestSyncLock(t, api),
+		}, api
 	}
 
-	t.Run("builds the configured provider on first use", func(t *testing.T) {
-		p := newPlugin(t, ConfigAttributeProviderKVStore)
-		require.Nil(t, p.attributeProvider, "nothing should have built one before the first sync")
+	t.Run("no stored document", func(t *testing.T) {
+		p, api := newPlugin(t)
+		api.On("KVGet", sync.AttributesStoreKey).Return(nil, nil).Once()
 
-		assert.IsType(t, &sync.KVStoreProvider{}, p.ensureAttributeProvider())
-		assert.Equal(t, ConfigAttributeProviderKVStore, p.attributeProviderKind)
+		_, err := p.runSync()
+
+		require.ErrorIs(t, err, sync.ErrNoStoredDocument)
 	})
 
-	t.Run("reuses the provider while the setting is unchanged", func(t *testing.T) {
-		p := newPlugin(t, ConfigAttributeProviderFile)
+	t.Run("takes and releases the cluster sync lock", func(t *testing.T) {
+		p, api := newPlugin(t)
+		api.On("KVGet", sync.AttributesStoreKey).Return(nil, nil).Once()
 
-		first := p.ensureAttributeProvider()
-		assert.Same(t, first, p.ensureAttributeProvider())
+		_, _ = p.runSync()
+
+		lockKey := "mutex_" + syncLockKey
+		api.AssertCalled(t, "KVSetWithOptions", lockKey, []byte{1}, mock.MatchedBy(func(o model.PluginKVSetOptions) bool { return o.Atomic }))
+		api.AssertCalled(t, "KVSetWithOptions", lockKey, []byte(nil), model.PluginKVSetOptions{})
 	})
 
-	t.Run("closes and replaces the provider when the setting changes", func(t *testing.T) {
-		p := newPlugin(t, ConfigAttributeProviderKVStore)
-		previous := &closeRecorder{}
-		p.attributeProvider = previous
-		p.attributeProviderKind = ConfigAttributeProviderFile
+	t.Run("a stored document", func(t *testing.T) {
+		p, api := newPlugin(t)
+		api.On("KVGet", sync.AttributesStoreKey).
+			Return(storedValue(t, time.Now(), []byte(`{"version": 2, "users": [{"email":"nobody@example.com"}]}`)), nil).Once()
+		api.On("SearchPropertyFields", "group-id", mock.Anything).Return([]*model.PropertyField{}, nil)
 
-		assert.IsType(t, &sync.KVStoreProvider{}, p.ensureAttributeProvider())
-		assert.True(t, previous.closed, "the provider being replaced should be closed")
-		assert.Equal(t, ConfigAttributeProviderKVStore, p.attributeProviderKind)
-	})
+		notFoundErr := model.NewAppError("GetUserByEmail", "app.user.get_by_email.app_error", nil, "", 404)
+		api.On("GetUserByEmail", "nobody@example.com").Return(nil, notFoundErr).Once()
 
-	t.Run("replaces the provider even when closing it fails", func(t *testing.T) {
-		p := newPlugin(t, ConfigAttributeProviderFile)
-		p.attributeProvider = &closeRecorder{closeErr: errors.New("close failed")}
-		p.attributeProviderKind = ConfigAttributeProviderKVStore
+		summary, err := p.runSync()
 
-		assert.IsType(t, &sync.FileProvider{}, p.ensureAttributeProvider())
+		require.NoError(t, err)
+		assert.Equal(t, 1, summary.UsersSkipped)
 	})
 }

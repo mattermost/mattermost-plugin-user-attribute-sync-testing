@@ -6,15 +6,6 @@ import (
 	"github.com/pkg/errors"
 )
 
-// The accepted values of the AttributeProvider setting. These strings are stored in the server
-// configuration, so they are effectively a wire format: the radio values in
-// webapp/src/components/attribute_provider.tsx and the default in plugin.json have to match them
-// exactly, and renaming one means migrating existing installations.
-const (
-	ConfigAttributeProviderFile    = "FileProvider"
-	ConfigAttributeProviderKVStore = "KVStore"
-)
-
 // configuration captures the plugin's external configuration as exposed in the Mattermost server
 // configuration, as well as values computed from the configuration. Any public fields will be
 // deserialized from the Mattermost server configuration in OnConfigurationChange.
@@ -26,17 +17,7 @@ const (
 //
 // Adding a reference type — a map, slice, or pointer — means updating Clone, whose shallow copy
 // would otherwise leave the clone aliasing the original's underlying data.
-type configuration struct {
-	// SyncIntervalMinutes determines how often (in minutes) the plugin syncs user attributes
-	// from the external source. Must be at least 1 minute.
-	SyncIntervalMinutes int
-
-	// AttributeProvider selects which data source to sync from — one of the
-	// ConfigAttributeProvider* values above. It is rendered in the System Console by a custom
-	// webapp component rather than a built-in control, because the KVStore option needs upload
-	// and download buttons alongside the choice itself.
-	AttributeProvider string
-}
+type configuration struct{}
 
 // Clone shallow copies the configuration, which is sufficient while every field is a value type.
 func (c *configuration) Clone() *configuration {

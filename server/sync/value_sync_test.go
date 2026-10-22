@@ -16,10 +16,11 @@ import (
 func testFieldIDCache() *FieldIDCache {
 	return &FieldIDCache{
 		FieldNameToID: map[string]string{
-			"job_title":  "test_field_id_1",
-			"programs":   "test_field_id_2",
-			"clearance":  "test_field_id_3",
-			"start_date": "test_field_id_4",
+			"job_title":      "test_field_id_1",
+			"programs":       "test_field_id_2",
+			"clearance":      "test_field_id_3",
+			"start_date":     "test_field_id_4",
+			"classification": "test_field_id_5",
 		},
 		OptionNameToID: map[string]string{
 			"programs|Apples":        "test_opt_id_apples",
@@ -29,6 +30,15 @@ func testFieldIDCache() *FieldIDCache {
 			"clearance|Confidential": "test_opt_id_confidential",
 			"clearance|Secret":       "test_opt_id_secret",
 			"clearance|Top Secret":   "test_opt_id_top_secret",
+			"classification|Alpha":   "test_opt_id_alpha",
+			"classification|Alpha-1": "test_opt_id_alpha_1",
+		},
+		FieldNameToType: map[string]model.PropertyFieldType{
+			"job_title":      model.PropertyFieldTypeText,
+			"programs":       model.PropertyFieldTypeMultiselect,
+			"clearance":      model.PropertyFieldTypeRank,
+			"start_date":     model.PropertyFieldTypeDate,
+			"classification": model.PropertyFieldTypeGraph,
 		},
 	}
 }
@@ -197,7 +207,12 @@ func TestBuildPropertyValues(t *testing.T) {
 		Id:    "user123",
 		Email: "test@example.com",
 	}
+	userIdentityKeys := []string{"email"}
 	cache := testFieldIDCache()
+
+	buildForUser := func(client *pluginapi.Client, userAttrs map[string]interface{}) ([]*model.PropertyValue, error) {
+		return buildPropertyValues(client, model.PropertyValueTargetTypeUser, user.Id, userIdentityKeys, user.Email, groupID, userAttrs, cache)
+	}
 
 	t.Run("builds values for all field types", func(t *testing.T) {
 		api := &plugintest.API{}
@@ -211,7 +226,7 @@ func TestBuildPropertyValues(t *testing.T) {
 			"clearance":  "Top Secret",
 		}
 
-		values, err := buildPropertyValues(client, user, groupID, userAttrs, cache)
+		values, err := buildForUser(client, userAttrs)
 		require.NoError(t, err)
 		assert.Len(t, values, 4) // email excluded
 
@@ -234,7 +249,7 @@ func TestBuildPropertyValues(t *testing.T) {
 			"programs": []string{"Apples", "Lemons"},
 		}
 
-		values, err := buildPropertyValues(client, user, groupID, userAttrs, cache)
+		values, err := buildForUser(client, userAttrs)
 		require.NoError(t, err)
 		assert.Len(t, values, 1)
 
@@ -243,6 +258,48 @@ func TestBuildPropertyValues(t *testing.T) {
 		err = json.Unmarshal(values[0].Value, &optionIDs)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"test_opt_id_apples", "test_opt_id_lemons"}, optionIDs)
+	})
+
+	t.Run("writes a graph value as an array of option IDs", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		userAttrs := map[string]interface{}{
+			"email":          "test@example.com",
+			"classification": []interface{}{"Alpha", "Alpha-1"},
+		}
+
+		values, err := buildForUser(client, userAttrs)
+		require.NoError(t, err)
+		assert.Len(t, values, 1)
+
+		var optionIDs []string
+		err = json.Unmarshal(values[0].Value, &optionIDs)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"test_opt_id_alpha", "test_opt_id_alpha_1"}, optionIDs)
+	})
+
+	t.Run("unknown graph option skips only that field", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		userAttrs := map[string]interface{}{
+			"email":          "test@example.com",
+			"job_title":      "Software Engineer",
+			"classification": []interface{}{"Alpha", "Unknown"},
+		}
+
+		api.On("LogWarn", "Failed to format field value, skipping field",
+			"field_name", "classification",
+			"record", "test@example.com",
+			"error", mock.Anything)
+
+		values, err := buildForUser(client, userAttrs)
+		require.NoError(t, err)
+		assert.Len(t, values, 1)
+		assert.Equal(t, "test_field_id_1", values[0].FieldID)
+
+		api.AssertExpectations(t)
 	})
 
 	t.Run("looks up option_ids for rank fields", func(t *testing.T) {
@@ -254,7 +311,7 @@ func TestBuildPropertyValues(t *testing.T) {
 			"clearance": "CUI",
 		}
 
-		values, err := buildPropertyValues(client, user, groupID, userAttrs, cache)
+		values, err := buildForUser(client, userAttrs)
 		require.NoError(t, err)
 		assert.Len(t, values, 1)
 
@@ -272,7 +329,7 @@ func TestBuildPropertyValues(t *testing.T) {
 			"email": "test@example.com",
 		}
 
-		values, err := buildPropertyValues(client, user, groupID, userAttrs, cache)
+		values, err := buildForUser(client, userAttrs)
 		require.NoError(t, err)
 		assert.Len(t, values, 0)
 	})
@@ -290,9 +347,9 @@ func TestBuildPropertyValues(t *testing.T) {
 		// Expect log warning for unknown field
 		api.On("LogWarn", "Unknown field name, skipping",
 			"field_name", "unknown_field",
-			"user_email", "test@example.com")
+			"record", "test@example.com")
 
-		values, err := buildPropertyValues(client, user, groupID, userAttrs, cache)
+		values, err := buildForUser(client, userAttrs)
 		require.NoError(t, err)
 		assert.Len(t, values, 1) // Only job_title
 
@@ -311,10 +368,10 @@ func TestBuildPropertyValues(t *testing.T) {
 		// Expect log warning for unsupported type
 		api.On("LogWarn", "Unsupported field value type, skipping field",
 			"field_name", "job_title",
-			"user_email", "test@example.com",
+			"record", "test@example.com",
 			"value_type", "int")
 
-		values, err := buildPropertyValues(client, user, groupID, userAttrs, cache)
+		values, err := buildForUser(client, userAttrs)
 		require.NoError(t, err)
 		assert.Len(t, values, 0)
 
@@ -327,9 +384,30 @@ func TestBuildPropertyValues(t *testing.T) {
 
 		userAttrs := map[string]interface{}{}
 
-		values, err := buildPropertyValues(client, user, groupID, userAttrs, cache)
+		values, err := buildForUser(client, userAttrs)
 		require.NoError(t, err)
 		assert.Len(t, values, 0)
+	})
+
+	t.Run("builds values for a channel target with its own identity keys", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		channelAttrs := map[string]interface{}{
+			"team":      "engineering", // Identity keys, should be skipped
+			"channel":   "town-square",
+			"job_title": "General discussion",
+		}
+
+		values, err := buildPropertyValues(client, model.PropertyValueTargetTypeChannel, "channel123",
+			[]string{"team", "channel"}, "engineering/town-square", groupID, channelAttrs, cache)
+		require.NoError(t, err)
+		assert.Len(t, values, 1) // team and channel excluded
+
+		assert.Equal(t, groupID, values[0].GroupID)
+		assert.Equal(t, "channel", values[0].TargetType)
+		assert.Equal(t, "channel123", values[0].TargetID)
+		assert.Equal(t, "test_field_id_1", values[0].FieldID)
 	})
 }
 
@@ -364,8 +442,12 @@ func TestSyncUsers(t *testing.T) {
 			},
 		}
 
-		err := SyncUsers(client, groupID, users, cache)
+		summary := &Summary{}
+		err := SyncUsers(client, groupID, users, cache, summary)
 		require.NoError(t, err)
+		assert.Equal(t, 2, summary.UsersSynced)
+		assert.Equal(t, 0, summary.UsersSkipped)
+		assert.Equal(t, len(users), summary.UsersSynced+summary.UsersSkipped)
 
 		api.AssertExpectations(t)
 	})
@@ -391,8 +473,12 @@ func TestSyncUsers(t *testing.T) {
 			},
 		}
 
-		err := SyncUsers(client, groupID, users, cache)
+		summary := &Summary{}
+		err := SyncUsers(client, groupID, users, cache, summary)
 		require.NoError(t, err)
+		assert.Equal(t, 1, summary.UsersSynced)
+		assert.Equal(t, 1, summary.UsersSkipped)
+		assert.Equal(t, len(users), summary.UsersSynced+summary.UsersSkipped)
 
 		api.AssertExpectations(t)
 	})
@@ -423,8 +509,12 @@ func TestSyncUsers(t *testing.T) {
 			},
 		}
 
-		err := SyncUsers(client, groupID, users, cache)
+		summary := &Summary{}
+		err := SyncUsers(client, groupID, users, cache, summary)
 		require.NoError(t, err)
+		assert.Equal(t, 1, summary.UsersSynced)
+		assert.Equal(t, 1, summary.UsersSkipped)
+		assert.Equal(t, len(users), summary.UsersSynced+summary.UsersSkipped)
 
 		api.AssertExpectations(t)
 	})
@@ -444,8 +534,12 @@ func TestSyncUsers(t *testing.T) {
 			},
 		}
 
-		err := SyncUsers(client, groupID, users, cache)
+		summary := &Summary{}
+		err := SyncUsers(client, groupID, users, cache, summary)
 		require.NoError(t, err)
+		assert.Equal(t, 0, summary.UsersSynced)
+		assert.Equal(t, 1, summary.UsersSkipped)
+		assert.Equal(t, len(users), summary.UsersSynced+summary.UsersSkipped)
 
 		api.AssertExpectations(t)
 	})
@@ -487,8 +581,12 @@ func TestSyncUsers(t *testing.T) {
 			},
 		}
 
-		err := SyncUsers(client, groupID, users, cache)
+		summary := &Summary{}
+		err := SyncUsers(client, groupID, users, cache, summary)
 		require.NoError(t, err)
+		assert.Equal(t, 1, summary.UsersSynced)
+		assert.Equal(t, 1, summary.UsersSkipped)
+		assert.Equal(t, len(users), summary.UsersSynced+summary.UsersSkipped)
 
 		api.AssertExpectations(t)
 	})
@@ -499,8 +597,156 @@ func TestSyncUsers(t *testing.T) {
 
 		users := []map[string]interface{}{}
 
-		err := SyncUsers(client, groupID, users, cache)
+		summary := &Summary{}
+		err := SyncUsers(client, groupID, users, cache, summary)
 		require.NoError(t, err)
+		assert.Equal(t, 0, summary.UsersSynced)
+		assert.Equal(t, 0, summary.UsersSkipped)
+		assert.Equal(t, len(users), summary.UsersSynced+summary.UsersSkipped)
+
+		api.AssertExpectations(t)
+	})
+}
+
+func TestSyncChannels(t *testing.T) {
+	groupID := "test-group-id"
+	cache := testFieldIDCache()
+
+	t.Run("successfully syncs a channel", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		channel := &model.Channel{Id: "channel1", Name: "town-square"}
+		api.On("GetChannelByNameForTeamName", "ad-1", "town-square", false).Return(channel, nil)
+		api.On("UpsertPropertyValues", mock.MatchedBy(func(values []*model.PropertyValue) bool {
+			// team and channel are identity keys, never written as values
+			return len(values) == 2 &&
+				values[0].TargetType == model.PropertyValueTargetTypeChannel &&
+				values[0].TargetID == "channel1"
+		})).Return([]*model.PropertyValue{}, nil)
+		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+
+		channels := []map[string]interface{}{
+			{
+				"team":      "ad-1",
+				"channel":   "town-square",
+				"job_title": "General discussion",
+				"programs":  []interface{}{"Apples"},
+			},
+		}
+
+		summary := &Summary{}
+		err := SyncChannels(client, groupID, channels, cache, summary)
+		require.NoError(t, err)
+		assert.Equal(t, 1, summary.ChannelsSynced)
+		assert.Equal(t, 0, summary.ChannelsSkipped)
+
+		api.AssertExpectations(t)
+	})
+
+	t.Run("skips channel not found in Mattermost", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		notFoundErr := model.NewAppError("GetChannelByNameForTeamName", "app.channel.get_by_name.app_error", nil, "", 404)
+		api.On("GetChannelByNameForTeamName", "ad-1", "missing", false).Return(nil, notFoundErr)
+		api.On("LogWarn", "Channel not found by team and channel name, skipping",
+			"team", "ad-1",
+			"channel", "missing",
+			"error", mock.Anything)
+
+		channels := []map[string]interface{}{
+			{
+				"team":      "ad-1",
+				"channel":   "missing",
+				"job_title": "General discussion",
+			},
+		}
+
+		summary := &Summary{}
+		err := SyncChannels(client, groupID, channels, cache, summary)
+		require.NoError(t, err)
+		assert.Equal(t, 0, summary.ChannelsSynced)
+		assert.Equal(t, 1, summary.ChannelsSkipped)
+
+		api.AssertExpectations(t)
+	})
+
+	t.Run("skips record missing team or channel", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		api.On("LogWarn", "Channel object missing team or channel field, skipping")
+
+		channels := []map[string]interface{}{
+			{"channel": "town-square", "job_title": "No team"},
+			{"team": "ad-1", "job_title": "No channel"},
+			{"team": 42, "channel": "town-square", "job_title": "Non-string team"},
+		}
+
+		summary := &Summary{}
+		err := SyncChannels(client, groupID, channels, cache, summary)
+		require.NoError(t, err)
+		assert.Equal(t, 0, summary.ChannelsSynced)
+		assert.Equal(t, len(channels), summary.ChannelsSkipped)
+
+		api.AssertExpectations(t)
+	})
+
+	t.Run("empty cache skips every record", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		channel := &model.Channel{Id: "channel1", Name: "town-square"}
+		api.On("GetChannelByNameForTeamName", "ad-1", "town-square", false).Return(channel, nil)
+		api.On("LogWarn", "Unknown field name, skipping",
+			"field_name", "job_title",
+			"record", "ad-1/town-square")
+		api.On("LogDebug", "No property values to sync for channel", "channel", "ad-1/town-square")
+
+		channels := []map[string]interface{}{
+			{"team": "ad-1", "channel": "town-square", "job_title": "General discussion"},
+		}
+
+		summary := &Summary{}
+		err := SyncChannels(client, groupID, channels, NewFieldIDCache(), summary)
+		require.NoError(t, err)
+		assert.Equal(t, 0, summary.ChannelsSynced)
+		assert.Equal(t, 1, summary.ChannelsSkipped)
+
+		api.AssertExpectations(t)
+	})
+
+	t.Run("continues sync when upsert fails for one channel", func(t *testing.T) {
+		api := &plugintest.API{}
+		client := pluginapi.NewClient(api, &plugintest.Driver{})
+
+		api.On("GetChannelByNameForTeamName", "ad-1", "town-square", false).Return(&model.Channel{Id: "channel1"}, nil)
+		api.On("GetChannelByNameForTeamName", "ad-1", "off-topic", false).Return(&model.Channel{Id: "channel2"}, nil)
+
+		api.On("UpsertPropertyValues", mock.MatchedBy(func(values []*model.PropertyValue) bool {
+			return len(values) > 0 && values[0].TargetID == "channel1"
+		})).Return(nil, assert.AnError).Once()
+		api.On("UpsertPropertyValues", mock.MatchedBy(func(values []*model.PropertyValue) bool {
+			return len(values) > 0 && values[0].TargetID == "channel2"
+		})).Return([]*model.PropertyValue{}, nil).Once()
+
+		api.On("LogError", "Failed to upsert property values, skipping channel",
+			"channel", "ad-1/town-square",
+			"value_count", 1,
+			"error", mock.Anything)
+		api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+
+		channels := []map[string]interface{}{
+			{"team": "ad-1", "channel": "town-square", "job_title": "General discussion"},
+			{"team": "ad-1", "channel": "off-topic", "job_title": "Random"},
+		}
+
+		summary := &Summary{}
+		err := SyncChannels(client, groupID, channels, cache, summary)
+		require.NoError(t, err)
+		assert.Equal(t, 1, summary.ChannelsSynced)
+		assert.Equal(t, 1, summary.ChannelsSkipped)
 
 		api.AssertExpectations(t)
 	})

@@ -5,9 +5,9 @@ import {
     adminPassword,
     adminStorageStatePath,
     adminUsername,
+    attributesURL,
     baseURL,
     pluginID,
-    userAttributesURL,
 } from './constants';
 
 /**
@@ -89,29 +89,6 @@ export async function apiEnablePlugin(context: APIRequestContext) {
 }
 
 /**
- * Sets one of this plugin's settings.
- *
- * Plugin settings live in a nested map at PluginSettings.Plugins[pluginID], and
- * /api/v4/config is a whole-document PUT — there is no endpoint for patching a
- * single key. This read-modify-write of shared server state is why
- * playwright.config.ts runs a single worker.
- */
-export async function apiSetPluginSetting(context: APIRequestContext, key: string, value: unknown) {
-    const headers = await getHTTPHeaders(context);
-    const config = await (await context.get('/api/v4/config', {headers})).json();
-
-    config.PluginSettings.Plugins = {
-        ...config.PluginSettings.Plugins,
-        [pluginID]: {
-            ...config.PluginSettings.Plugins[pluginID],
-            [key]: value,
-        },
-    };
-
-    await context.put('/api/v4/config', {data: config, headers});
-}
-
-/**
  * Dismisses the tutorial and onboarding flows for the logged-in user.
  *
  * The onboarding checklist renders a transparent full-viewport overlay in
@@ -138,7 +115,7 @@ export async function apiDismissOnboarding(context: APIRequestContext) {
 /** Removes any stored attributes file, so a spec starts from a known state. */
 export async function apiDeleteStoredAttributes(context: APIRequestContext) {
     const headers = await getHTTPHeaders(context);
-    await context.delete(userAttributesURL, {headers});
+    await context.delete(attributesURL, {headers});
 }
 
 /**
@@ -147,7 +124,7 @@ export async function apiDeleteStoredAttributes(context: APIRequestContext) {
  */
 export async function apiUploadStoredAttributes(context: APIRequestContext, filePath: string) {
     const headers = await getHTTPHeaders(context);
-    const response = await context.post(userAttributesURL, {
+    const response = await context.post(attributesURL, {
         headers,
         data: await fs.readFile(filePath),
     });

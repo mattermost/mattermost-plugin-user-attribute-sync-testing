@@ -13,6 +13,9 @@ import (
 	attrsync "github.com/mattermost/mattermost-plugin-user-attribute-sync-testing/server/sync"
 )
 
+// syncLockKey names the cluster mutex behind Plugin.syncLock.
+const syncLockKey = "sync"
+
 // Plugin implements the interface expected by the Mattermost server to communicate between the server and plugin processes.
 type Plugin struct {
 	plugin.MattermostPlugin
@@ -23,29 +26,18 @@ type Plugin struct {
 	// router is the HTTP router that serves API endpoints.
 	router *mux.Router
 
-	// backgroundJob runs attribute sync on the configured time interval.
-	backgroundJob *cluster.Job
-
-	// attributeProvider reads user attribute data from a source outside Mattermost. Either
-	// FileProvider or KVStoreProvider, decided by the AttributeProvider configuration.
-	//
-	// The sync job owns these two fields while it is scheduled, which is why neither is locked.
-	attributeProvider attrsync.AttributeProvider
-
-	// attributeProviderKind is the setting attributeProvider was built from.
-	attributeProviderKind string
-
 	// groupID is the ID of the Mattermost property group this plugin reads and writes.
 	// We use the "access_control" group because user attribute fields defined here can be
 	// referenced from attribute-based access control (ABAC) policy rules — e.g. a channel
 	// policy that only admits users whose "Programs" includes "Apples".
 	groupID string
 
-	// fieldIDCache stores mappings from external field/option names to Mattermost-generated IDs
-	fieldIDCache *attrsync.FieldIDCache
-
 	// configurationLock synchronizes access to the configuration.
 	configurationLock sync.RWMutex
+
+	// syncLock serializes activation, upload, and delete across every node in the
+	// cluster, so two triggers cannot interleave their writes.
+	syncLock *cluster.Mutex
 
 	// configuration is the active plugin configuration. Consult getConfiguration and
 	// setConfiguration for usage.
@@ -55,6 +47,12 @@ type Plugin struct {
 // OnActivate is invoked when the plugin is activated. If an error is returned, the plugin will be deactivated.
 func (p *Plugin) OnActivate() error {
 	p.client = pluginapi.NewClient(p.API, p.Driver)
+
+	syncLock, err := cluster.NewMutex(p.API, syncLockKey)
+	if err != nil {
+		return errors.Wrap(err, "failed to create sync lock")
+	}
+	p.syncLock = syncLock
 
 	// Register the HTTP routes that back the System Console upload UI. Do this before anything
 	// that can fail, so the endpoints exist for any request the server routes to us.
@@ -72,55 +70,27 @@ func (p *Plugin) OnActivate() error {
 	}
 	p.groupID = group.ID
 
-	// Sync field definitions on plugin activation and load their IDs.
-	// Creates/updates the user attribute fields and stores the auto-generated
-	// IDs for use during value sync.
-	p.fieldIDCache, err = attrsync.SyncFields(p.client, p.groupID, manifest.Id)
-	if err != nil {
-		return errors.Wrap(err, "failed to sync field definitions")
-	}
-	p.client.Log.Info("Field sync completed successfully")
-
-	// Note: the attribute provider is built by the sync job on its first run, not here — see
-	// ensureAttributeProvider.
-
-	// Set up the attribute sync cluster job
-	// This job runs periodically to synchronize user attribute values from external
-	// sources into Mattermost user attribute fields. Using cluster.Schedule ensures
-	// only one server instance runs the job in multi-server deployments.
-	job, err := cluster.Schedule(
-		p.API,
-		"AttributeSync",
-		p.nextWaitInterval,
-		p.runSync,
-	)
-	if err != nil {
-		return errors.Wrap(err, "failed to schedule attribute sync job")
+	summary, err := p.runSync()
+	switch {
+	case errors.Is(err, attrsync.ErrNoStoredDocument):
+		p.client.Log.Info("No attributes document stored, skipping sync")
+	case err != nil:
+		// Activate anyway: failing here would take the HTTP routes down, and the
+		// admin would have no way to upload a replacement.
+		p.client.Log.Error("Failed to apply stored attributes document", "error", err.Error())
+	default:
+		p.client.Log.Info("Applied stored attributes document",
+			"fields_created", summary.FieldsCreated,
+			"fields_updated", summary.FieldsUpdated,
+			"fields_deleted", summary.FieldsDeleted,
+			"fields_skipped", summary.FieldsSkipped,
+			"users_synced", summary.UsersSynced,
+			"users_skipped", summary.UsersSkipped,
+			"channels_synced", summary.ChannelsSynced,
+			"channels_skipped", summary.ChannelsSkipped,
+		)
 	}
 
-	p.backgroundJob = job
-
-	return nil
-}
-
-// OnDeactivate is invoked when the plugin is deactivated.
-// Cleans up the attribute sync cluster job and the attribute provider to prevent orphaned
-// resources. The HTTP router needs no cleanup; the server stops routing to a deactivated plugin.
-//
-// The order is important: cluster.Job.Close blocks until a running sync returns, which is what
-// makes it safe to close the provider here. Both providers' Close() are currently no-ops, but the
-// ordering holds for a provider that needs to release something.
-func (p *Plugin) OnDeactivate() error {
-	if p.backgroundJob != nil {
-		if err := p.backgroundJob.Close(); err != nil {
-			p.API.LogError("Failed to close attribute sync job", "err", err)
-		}
-	}
-	if p.attributeProvider != nil {
-		if err := p.attributeProvider.Close(); err != nil {
-			p.API.LogError("Failed to close file provider", "err", err)
-		}
-	}
 	return nil
 }
 

@@ -3,7 +3,7 @@ import type {Store, Action} from 'redux';
 
 import type {GlobalState} from '@mattermost/types/store';
 
-import AttributeProvider from 'components/attribute_provider';
+import UploadUserAttributes from 'components/upload_user_attributes';
 
 import type {PluginRegistry} from 'types/mattermost-webapp';
 
@@ -16,7 +16,7 @@ export default class Plugin {
         // first argument must match the setting key in plugin.json, which declares it as
         // "type": "custom" so the console defers to this component. showTitle lets the console
         // draw the setting's label next to it, so it lines up with the settings above.
-        registry.registerAdminConsoleCustomSetting('AttributeProvider', AttributeProvider, {showTitle: true});
+        registry.registerAdminConsoleCustomSetting('Attributes', UploadUserAttributes, {showTitle: true});
     }
 }
 

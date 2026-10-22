@@ -13,6 +13,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin"
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
+	"github.com/mattermost/mattermost/server/public/pluginapi/cluster"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
@@ -30,22 +31,34 @@ func newTestPlugin(t *testing.T) (*Plugin, *plugintest.API) {
 	mockLogs(api)
 
 	client := pluginapi.NewClient(api, &plugintest.Driver{})
-	kvStoreProvider := sync.NewKVStoreProvider(client)
 
 	p := &Plugin{
-		MattermostPlugin:  plugin.MattermostPlugin{API: api},
-		client:            client,
-		attributeProvider: kvStoreProvider,
+		MattermostPlugin: plugin.MattermostPlugin{API: api},
+		client:           client,
+		groupID:          "group-id",
+		syncLock:         newTestSyncLock(t, api),
 	}
 	p.initializeAPI()
 
 	return p, api
 }
 
+// newTestSyncLock returns the cluster mutex behind syncLock, with its KV writes
+// mocked to always succeed: a test owns the whole cluster, so the lock is never
+// contended.
+func newTestSyncLock(t *testing.T, api *plugintest.API) *cluster.Mutex {
+	t.Helper()
+
+	api.On("KVSetWithOptions", "mutex_"+syncLockKey, mock.Anything, mock.Anything).Return(true, nil).Maybe()
+	syncLock, err := cluster.NewMutex(api, syncLockKey)
+	require.NoError(t, err)
+	return syncLock
+}
+
 // mockLogs registers permissive expectations for the log methods so tests that
 // exercise error paths don't have to match every log line exactly.
 func mockLogs(api *plugintest.API) {
-	const maxLogFields = 8
+	const maxLogFields = 16
 	for _, method := range []string{"LogDebug", "LogInfo", "LogWarn", "LogError"} {
 		for n := 0; n <= maxLogFields; n++ {
 			args := make([]interface{}, n+1)
@@ -79,12 +92,12 @@ func doRequest(t *testing.T, p *Plugin, method, path, userID string, body []byte
 	return w.Result()
 }
 
-// storedValue encodes a StoredUserAttrs the way the upload handler does, so a KVGet mock returns
+// storedValue encodes a StoredAttributes the way the upload handler does, so a KVGet mock returns
 // what a handler would really find.
 func storedValue(t *testing.T, lastUpdated time.Time, data []byte) []byte {
 	t.Helper()
 
-	value, err := json.Marshal(sync.StoredUserAttrs{LastUpdated: lastUpdated, Data: data})
+	value, err := json.Marshal(sync.StoredAttributes{LastUpdated: lastUpdated, Data: data})
 	require.NoError(t, err)
 
 	return value
@@ -94,7 +107,7 @@ func storedValue(t *testing.T, lastUpdated time.Time, data []byte) []byte {
 // LastUpdated field, since that is set by time.Now()
 func storesFile(data []byte) interface{} {
 	return mock.MatchedBy(func(value []byte) bool {
-		var stored sync.StoredUserAttrs
+		var stored sync.StoredAttributes
 		if err := json.Unmarshal(value, &stored); err != nil {
 			return false
 		}
@@ -117,6 +130,20 @@ func requireErrorResponse(t *testing.T, resp *http.Response, statusCode int, mes
 	require.Equal(t, message, body.Error)
 }
 
+// requireErrorContains is requireErrorResponse for messages that end with the
+// underlying error, matching only the fixed part.
+func requireErrorContains(t *testing.T, resp *http.Response, statusCode int, message string) {
+	t.Helper()
+
+	require.Equal(t, statusCode, resp.StatusCode)
+
+	var body struct {
+		Error string `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	require.Contains(t, body.Error, message)
+}
+
 // TestUserAttributesAccessControl covers the two rejection paths the requireSysadmin middleware
 // applies to every endpoint, so the individual handler tests below can assume an authorized admin.
 // Driving each method and path proves the middleware is actually reached by all of them, which is
@@ -127,10 +154,10 @@ func TestUserAttributesAccessControl(t *testing.T) {
 		method string
 		path   string
 	}{
-		{"upload", http.MethodPost, "/user_attributes"},
-		{"download", http.MethodGet, "/user_attributes"},
-		{"status", http.MethodGet, "/user_attributes/status"},
-		{"delete", http.MethodDelete, "/user_attributes"},
+		{"upload", http.MethodPost, "/attributes"},
+		{"download", http.MethodGet, "/attributes"},
+		{"status", http.MethodGet, "/attributes/status"},
+		{"delete", http.MethodDelete, "/attributes"},
 	}
 
 	for _, endpoint := range endpoints {
@@ -153,47 +180,81 @@ func TestUserAttributesAccessControl(t *testing.T) {
 	}
 }
 
-// TestHandleUploadUserAttributes covers the upload path: what is stored, and the four ways a
-// request is refused (malformed JSON, wrong shape, too large, and a KV write that did not take).
+// TestHandleUploadUserAttributes covers the upload path: what is stored, and the rejection
+// reasons a request can fail for (truncated JSON, the old bare-array format, null, too large, and
+// a KV write that did not take).
 func TestHandleUploadUserAttributes(t *testing.T) {
-	validFile := []byte(`[{"email":"user1@example.com","job_title":"Engineer"}]`)
+	validFile := []byte(`{"version": 2, "fields": {"user": [{"name": "job_title", "display_name": "Job Title", "type": "text"}]}, "users": [{"email":"user1@example.com","job_title":"Engineer"}]}`)
 
-	t.Run("stores the uploaded file verbatim", func(t *testing.T) {
+	t.Run("stores the uploaded document verbatim", func(t *testing.T) {
 		p, api := newTestPlugin(t)
 
 		userID := model.NewId()
 		asSysadmin(api, userID)
-		api.On("KVSetWithOptions", sync.UserAttrsStoreKey, storesFile(validFile), model.PluginKVSetOptions{}).
+		api.On("KVSetWithOptions", sync.AttributesStoreKey, storesFile(validFile), model.PluginKVSetOptions{}).
 			Return(true, nil).Once()
+		api.On("CreatePropertyField", mock.MatchedBy(func(f *model.PropertyField) bool {
+			return f.Name == "job_title"
+		})).Return(&model.PropertyField{ID: "field-1", Name: "job_title", Type: model.PropertyFieldTypeText}, nil)
+		api.On("SearchPropertyFields", "group-id", mock.Anything).Return([]*model.PropertyField{}, nil)
+		api.On("GetUserByEmail", "user1@example.com").Return(&model.User{Id: "user1", Email: "user1@example.com"}, nil)
+		api.On("UpsertPropertyValues", mock.Anything).Return([]*model.PropertyValue{}, nil)
 
-		resp := doRequest(t, p, http.MethodPost, "/user_attributes", userID, validFile)
+		resp := doRequest(t, p, http.MethodPost, "/attributes", userID, validFile)
 		require.Equal(t, http.StatusCreated, resp.StatusCode)
 
-		var body userAttributesStatus
+		var body sync.Summary
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
-		require.True(t, body.Exists)
-		// Not checking exact time since it is determined by the handler.
-		require.NotNil(t, body.LastUpdated)
+		require.Equal(t, 1, body.FieldsCreated)
+		require.Equal(t, 0, body.FieldsUpdated)
+		require.Equal(t, 0, body.FieldsDeleted)
+		require.Equal(t, 0, body.FieldsSkipped)
+		require.Equal(t, 1, body.UsersSynced)
+		require.Equal(t, 0, body.UsersSkipped)
+		require.Equal(t, 0, body.ChannelsSynced)
+		require.Equal(t, 0, body.ChannelsSkipped)
 	})
 
-	t.Run("rejects malformed json", func(t *testing.T) {
+	t.Run("stores the document when field lookup fails", func(t *testing.T) {
+		p, api := newTestPlugin(t)
+
+		userID := model.NewId()
+		asSysadmin(api, userID)
+		api.On("KVSetWithOptions", sync.AttributesStoreKey, storesFile(validFile), model.PluginKVSetOptions{}).
+			Return(true, nil).Once()
+		api.On("SearchPropertyFields", "group-id", mock.Anything).
+			Return(nil, model.NewAppError("SearchPropertyFields", "app.error", nil, "connection refused", http.StatusInternalServerError))
+		api.On("GetUserByEmail", "user1@example.com").Return(&model.User{Id: "user1", Email: "user1@example.com"}, nil)
+
+		resp := doRequest(t, p, http.MethodPost, "/attributes", userID, validFile)
+		require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+		var body sync.Summary
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+		require.Equal(t, 1, body.FieldsSkipped)
+	})
+
+	t.Run("rejects truncated json", func(t *testing.T) {
 		p, api := newTestPlugin(t)
 
 		userID := model.NewId()
 		asSysadmin(api, userID)
 
-		resp := doRequest(t, p, http.MethodPost, "/user_attributes", userID, []byte(`[{"email":`))
-		requireErrorResponse(t, resp, http.StatusBadRequest, "invalid json - must be array of objects")
+		resp := doRequest(t, p, http.MethodPost, "/attributes", userID, []byte(`{"version": 2, "users":`))
+		requireErrorResponse(t, resp, http.StatusBadRequest,
+			"invalid attributes document: not a valid attributes document: unexpected end of JSON input")
 	})
 
-	t.Run("rejects valid json that is not an array of objects", func(t *testing.T) {
+	t.Run("rejects the old bare-array format", func(t *testing.T) {
 		p, api := newTestPlugin(t)
 
 		userID := model.NewId()
 		asSysadmin(api, userID)
 
-		resp := doRequest(t, p, http.MethodPost, "/user_attributes", userID, []byte(`{"email":"user1@example.com"}`))
-		requireErrorResponse(t, resp, http.StatusBadRequest, "invalid json - must be array of objects")
+		resp := doRequest(t, p, http.MethodPost, "/attributes", userID,
+			[]byte(`[{"email":"user1@example.com","job_title":"Engineer"}]`))
+		requireErrorResponse(t, resp, http.StatusBadRequest,
+			"invalid attributes document: not a valid attributes document: json: cannot unmarshal array into Go value of type sync.AttributesDocument")
 	})
 
 	t.Run("rejects a file over the size limit", func(t *testing.T) {
@@ -206,7 +267,7 @@ func TestHandleUploadUserAttributes(t *testing.T) {
 		// never has to be valid JSON because it is rejected before parsing.
 		oversized := bytes.Repeat([]byte("a"), maxFileSizeBytes+1)
 
-		resp := doRequest(t, p, http.MethodPost, "/user_attributes", userID, oversized)
+		resp := doRequest(t, p, http.MethodPost, "/attributes", userID, oversized)
 		requireErrorResponse(t, resp, http.StatusRequestEntityTooLarge,
 			fmt.Sprintf("file exceeds %d byte limit", maxFileSizeBytes))
 	})
@@ -217,8 +278,9 @@ func TestHandleUploadUserAttributes(t *testing.T) {
 		userID := model.NewId()
 		asSysadmin(api, userID)
 
-		resp := doRequest(t, p, http.MethodPost, "/user_attributes", userID, []byte(`null`))
-		requireErrorResponse(t, resp, http.StatusBadRequest, "invalid json - must be array of objects")
+		resp := doRequest(t, p, http.MethodPost, "/attributes", userID, []byte(`null`))
+		requireErrorResponse(t, resp, http.StatusBadRequest,
+			"invalid attributes document: unsupported document version 0: only version 2 is supported")
 	})
 
 	t.Run("reports a failed write", func(t *testing.T) {
@@ -226,10 +288,10 @@ func TestHandleUploadUserAttributes(t *testing.T) {
 
 		userID := model.NewId()
 		asSysadmin(api, userID)
-		api.On("KVSetWithOptions", sync.UserAttrsStoreKey, storesFile(validFile), model.PluginKVSetOptions{}).
+		api.On("KVSetWithOptions", sync.AttributesStoreKey, storesFile(validFile), model.PluginKVSetOptions{}).
 			Return(false, model.NewAppError("KVSetWithOptions", "kv.set.app_error", nil, "connection refused", http.StatusInternalServerError)).Once()
 
-		resp := doRequest(t, p, http.MethodPost, "/user_attributes", userID, validFile)
+		resp := doRequest(t, p, http.MethodPost, "/attributes", userID, validFile)
 		requireErrorResponse(t, resp, http.StatusInternalServerError, "failed to upload file")
 	})
 
@@ -238,10 +300,10 @@ func TestHandleUploadUserAttributes(t *testing.T) {
 
 		userID := model.NewId()
 		asSysadmin(api, userID)
-		api.On("KVSetWithOptions", sync.UserAttrsStoreKey, storesFile(validFile), model.PluginKVSetOptions{}).
+		api.On("KVSetWithOptions", sync.AttributesStoreKey, storesFile(validFile), model.PluginKVSetOptions{}).
 			Return(false, nil).Once()
 
-		resp := doRequest(t, p, http.MethodPost, "/user_attributes", userID, validFile)
+		resp := doRequest(t, p, http.MethodPost, "/attributes", userID, validFile)
 		requireErrorResponse(t, resp, http.StatusInternalServerError, "failed to upload file, please try again")
 	})
 }
@@ -253,11 +315,11 @@ func TestHandleDownloadUserAttributes(t *testing.T) {
 		p, api := newTestPlugin(t)
 
 		userID := model.NewId()
-		file := []byte(`[{"email":"user1@example.com","job_title":"Engineer"}]`)
+		file := []byte(`{"version": 2, "users": [{"email":"user1@example.com","job_title":"Engineer"}]}`)
 		asSysadmin(api, userID)
-		api.On("KVGet", sync.UserAttrsStoreKey).Return(storedValue(t, time.Now(), file), nil).Once()
+		api.On("KVGet", sync.AttributesStoreKey).Return(storedValue(t, time.Now(), file), nil).Once()
 
-		resp := doRequest(t, p, http.MethodGet, "/user_attributes", userID, nil)
+		resp := doRequest(t, p, http.MethodGet, "/attributes", userID, nil)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 
 		body, err := readAll(resp)
@@ -270,9 +332,9 @@ func TestHandleDownloadUserAttributes(t *testing.T) {
 
 		userID := model.NewId()
 		asSysadmin(api, userID)
-		api.On("KVGet", sync.UserAttrsStoreKey).Return(nil, nil).Once()
+		api.On("KVGet", sync.AttributesStoreKey).Return(nil, nil).Once()
 
-		resp := doRequest(t, p, http.MethodGet, "/user_attributes", userID, nil)
+		resp := doRequest(t, p, http.MethodGet, "/attributes", userID, nil)
 		requireErrorResponse(t, resp, http.StatusNotFound, "file not found")
 	})
 
@@ -281,10 +343,10 @@ func TestHandleDownloadUserAttributes(t *testing.T) {
 
 		userID := model.NewId()
 		asSysadmin(api, userID)
-		api.On("KVGet", sync.UserAttrsStoreKey).
+		api.On("KVGet", sync.AttributesStoreKey).
 			Return(nil, model.NewAppError("KVGet", "kv.get.app_error", nil, "connection refused", http.StatusInternalServerError)).Once()
 
-		resp := doRequest(t, p, http.MethodGet, "/user_attributes", userID, nil)
+		resp := doRequest(t, p, http.MethodGet, "/attributes", userID, nil)
 		requireErrorResponse(t, resp, http.StatusInternalServerError, "failed to download file")
 	})
 }
@@ -299,13 +361,13 @@ func TestHandleUserAttributesStatus(t *testing.T) {
 
 		userID := model.NewId()
 		asSysadmin(api, userID)
-		api.On("KVGet", sync.UserAttrsStoreKey).
-			Return(storedValue(t, uploadedAt, []byte(`[{"email":"user1@example.com"}]`)), nil).Once()
+		api.On("KVGet", sync.AttributesStoreKey).
+			Return(storedValue(t, uploadedAt, []byte(`{"version": 2, "users": [{"email":"user1@example.com"}]}`)), nil).Once()
 
-		resp := doRequest(t, p, http.MethodGet, "/user_attributes/status", userID, nil)
+		resp := doRequest(t, p, http.MethodGet, "/attributes/status", userID, nil)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 
-		var body userAttributesStatus
+		var body attributesStatus
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 		require.True(t, body.Exists)
 		require.NotNil(t, body.LastUpdated)
@@ -317,12 +379,12 @@ func TestHandleUserAttributesStatus(t *testing.T) {
 
 		userID := model.NewId()
 		asSysadmin(api, userID)
-		api.On("KVGet", sync.UserAttrsStoreKey).Return(nil, nil).Once()
+		api.On("KVGet", sync.AttributesStoreKey).Return(nil, nil).Once()
 
-		resp := doRequest(t, p, http.MethodGet, "/user_attributes/status", userID, nil)
+		resp := doRequest(t, p, http.MethodGet, "/attributes/status", userID, nil)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 
-		var body userAttributesStatus
+		var body attributesStatus
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 		require.False(t, body.Exists)
 		require.Nil(t, body.LastUpdated)
@@ -333,10 +395,10 @@ func TestHandleUserAttributesStatus(t *testing.T) {
 
 		userID := model.NewId()
 		asSysadmin(api, userID)
-		api.On("KVGet", sync.UserAttrsStoreKey).
+		api.On("KVGet", sync.AttributesStoreKey).
 			Return(nil, model.NewAppError("KVGet", "kv.get.app_error", nil, "connection refused", http.StatusInternalServerError)).Once()
 
-		resp := doRequest(t, p, http.MethodGet, "/user_attributes/status", userID, nil)
+		resp := doRequest(t, p, http.MethodGet, "/attributes/status", userID, nil)
 		requireErrorResponse(t, resp, http.StatusInternalServerError, "failed to access storage")
 	})
 
@@ -347,39 +409,95 @@ func TestHandleUserAttributesStatus(t *testing.T) {
 
 		userID := model.NewId()
 		asSysadmin(api, userID)
-		api.On("KVGet", sync.UserAttrsStoreKey).Return([]byte("not json"), nil).Once()
+		api.On("KVGet", sync.AttributesStoreKey).Return([]byte("not json"), nil).Once()
 
-		resp := doRequest(t, p, http.MethodGet, "/user_attributes/status", userID, nil)
+		resp := doRequest(t, p, http.MethodGet, "/attributes/status", userID, nil)
 		requireErrorResponse(t, resp, http.StatusInternalServerError, "failed to access storage")
 	})
 }
 
-// TestHandleDeleteUserAttributes checks that deleting removes the stored file, leaving the
-// provider with nothing to read.
 func TestHandleDeleteUserAttributes(t *testing.T) {
 	t.Run("deletes the stored file", func(t *testing.T) {
 		p, api := newTestPlugin(t)
 
 		userID := model.NewId()
 		asSysadmin(api, userID)
-		// KV.Delete is a Set of a nil value under the hood.
-		api.On("KVSetWithOptions", sync.UserAttrsStoreKey, []byte(nil), model.PluginKVSetOptions{}).
-			Return(true, nil).Once()
+		owned := &model.PropertyField{
+			ID:       model.NewId(),
+			Name:     "old_title",
+			CreateAt: 1,
+			Attrs:    model.StringInterface{model.PropertyAttrsSourcePluginID: manifest.Id},
+		}
+		api.On("SearchPropertyFields", "group-id", mock.Anything).Return([]*model.PropertyField{owned}, nil).Once()
+		mock.InOrder(
+			api.On("DeletePropertyValuesForField", "group-id", owned.ID).Return(nil).Once(),
+			api.On("DeletePropertyField", "group-id", owned.ID).Return(nil).Once(),
+			// KV.Delete is a Set of a nil value under the hood.
+			api.On("KVSetWithOptions", sync.AttributesStoreKey, []byte(nil), model.PluginKVSetOptions{}).
+				Return(true, nil).Once(),
+		)
 
-		resp := doRequest(t, p, http.MethodDelete, "/user_attributes", userID, nil)
+		resp := doRequest(t, p, http.MethodDelete, "/attributes", userID, nil)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var body sync.Summary
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+		require.Equal(t, 0, body.FieldsCreated)
+		require.Equal(t, 0, body.FieldsUpdated)
+		require.Equal(t, 1, body.FieldsDeleted)
+		require.Equal(t, 0, body.FieldsSkipped)
+		require.Equal(t, 0, body.UsersSynced)
+		require.Equal(t, 0, body.UsersSkipped)
+		require.Equal(t, 0, body.ChannelsSynced)
+		require.Equal(t, 0, body.ChannelsSkipped)
 	})
 
-	t.Run("reports a failed delete", func(t *testing.T) {
+	t.Run("keeps the stored file when the field search fails", func(t *testing.T) {
 		p, api := newTestPlugin(t)
 
 		userID := model.NewId()
 		asSysadmin(api, userID)
-		api.On("KVSetWithOptions", sync.UserAttrsStoreKey, []byte(nil), model.PluginKVSetOptions{}).
+		api.On("SearchPropertyFields", "group-id", mock.Anything).
+			Return(nil, model.NewAppError("SearchPropertyFields", "app.error", nil, "connection refused", http.StatusInternalServerError)).Once()
+
+		resp := doRequest(t, p, http.MethodDelete, "/attributes", userID, nil)
+		requireErrorContains(t, resp, http.StatusInternalServerError, "attribute removal failed, file kept so the delete can be retried:")
+		api.AssertNotCalled(t, "DeletePropertyField", mock.Anything, mock.Anything)
+		api.AssertNotCalled(t, "KVSetWithOptions", sync.AttributesStoreKey, mock.Anything, mock.Anything)
+	})
+
+	t.Run("keeps the stored file when a field delete fails", func(t *testing.T) {
+		p, api := newTestPlugin(t)
+
+		userID := model.NewId()
+		asSysadmin(api, userID)
+		owned := &model.PropertyField{
+			ID:       model.NewId(),
+			Name:     "old_title",
+			CreateAt: 1,
+			Attrs:    model.StringInterface{model.PropertyAttrsSourcePluginID: manifest.Id},
+		}
+		api.On("SearchPropertyFields", "group-id", mock.Anything).Return([]*model.PropertyField{owned}, nil).Once()
+		api.On("DeletePropertyValuesForField", "group-id", owned.ID).Return(nil).Once()
+		api.On("DeletePropertyField", "group-id", owned.ID).
+			Return(model.NewAppError("DeletePropertyField", "app.error", nil, "connection refused", http.StatusInternalServerError)).Once()
+
+		resp := doRequest(t, p, http.MethodDelete, "/attributes", userID, nil)
+		requireErrorContains(t, resp, http.StatusInternalServerError, "attribute removal failed, file kept so the delete can be retried:")
+		api.AssertNotCalled(t, "KVSetWithOptions", sync.AttributesStoreKey, mock.Anything, mock.Anything)
+	})
+
+	t.Run("reports a failed file delete after the fields are removed", func(t *testing.T) {
+		p, api := newTestPlugin(t)
+
+		userID := model.NewId()
+		asSysadmin(api, userID)
+		api.On("SearchPropertyFields", "group-id", mock.Anything).Return([]*model.PropertyField{}, nil).Once()
+		api.On("KVSetWithOptions", sync.AttributesStoreKey, []byte(nil), model.PluginKVSetOptions{}).
 			Return(false, model.NewAppError("KVSetWithOptions", "kv.set.app_error", nil, "connection refused", http.StatusInternalServerError)).Once()
 
-		resp := doRequest(t, p, http.MethodDelete, "/user_attributes", userID, nil)
-		requireErrorResponse(t, resp, http.StatusInternalServerError, "failed to delete file")
+		resp := doRequest(t, p, http.MethodDelete, "/attributes", userID, nil)
+		requireErrorResponse(t, resp, http.StatusInternalServerError, "attributes removed but failed to delete file")
 	})
 }
 
