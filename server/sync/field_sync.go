@@ -135,29 +135,25 @@ func updateField(
 	// declares none, so writing them would send empty values read as changes.
 	// LinkedFieldID is likewise left as the server returned it — a link can
 	// only be set at create.
-	linked := def.Template != ""
-	if !linked {
+	if def.Template == "" {
 		existingField.Type = def.Type
+		existingField.Attrs[model.PropertyAttrsAccessMode] = def.accessMode()
+		if def.Type.SupportsOptions() {
+			options, err := buildOptionsArr(def, cache)
+			if err != nil {
+				return nil, errors.Wrapf(err, "failed to update existing field %s", def.Name)
+			}
+			existingField.Attrs[model.PropertyFieldAttributeOptions] = options
+		}
 	}
 	existingField.Attrs[model.PropertyFieldAttrVisibility] = def.visibility()
 	existingField.Attrs[model.PropertyFieldAttrDisplayName] = def.DisplayName
 	existingField.Attrs[model.PropertyAttrsProtected] = true
 	existingField.Attrs[model.PropertyFieldAttrActions] = displayActions
-	if !linked {
-		existingField.Attrs[model.PropertyAttrsAccessMode] = def.accessMode()
-	}
 	// See createField for why the permission-level default is sysadmin.
 	existingField.PermissionField = def.permissionField()
 	existingField.PermissionValues = def.permissionValues()
 	existingField.PermissionOptions = def.permissionOptions()
-
-	if !linked && def.Type.SupportsOptions() {
-		options, err := buildOptionsArr(def, cache)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to update existing field %s", def.Name)
-		}
-		existingField.Attrs[model.PropertyFieldAttributeOptions] = options
-	}
 
 	updatedField, err := client.Property.UpdatePropertyField(groupID, existingField)
 	if err != nil {
