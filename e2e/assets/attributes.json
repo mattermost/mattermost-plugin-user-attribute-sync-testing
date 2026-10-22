@@ -1,0 +1,74 @@
+{
+  "version": 2,
+  "fields": {
+    "template": [
+      {
+        "name": "clearance",
+        "display_name": "Clearance",
+        "type": "rank",
+        "access_mode": "shared_only",
+        "options": [
+          {"name": "Unclassified", "rank": 1},
+          {"name": "CUI", "rank": 2},
+          {"name": "Confidential", "rank": 3},
+          {"name": "Secret", "rank": 4},
+          {"name": "Top Secret", "rank": 5}
+        ]
+      }
+    ],
+    "user": [
+      {
+        "name": "job_title",
+        "display_name": "Job Title",
+        "type": "text",
+        "access_mode": "public"
+      },
+      {
+        "name": "programs",
+        "display_name": "Programs",
+        "type": "multiselect",
+        "access_mode": "shared_only",
+        "options": [
+          {"name": "Apples"},
+          {"name": "Oranges"},
+          {"name": "Lemons"},
+          {"name": "Grapes"}
+        ]
+      },
+      {
+        "name": "clearance",
+        "display_name": "Clearance",
+        "template": "clearance"
+      },
+      {
+        "name": "start_date",
+        "display_name": "Start Date",
+        "type": "date",
+        "access_mode": "source_only"
+      }
+    ]
+  },
+  "users": [
+    {
+      "email": "john.doe@example.com",
+      "job_title": "Software Engineer",
+      "programs": ["Apples", "Oranges"],
+      "clearance": "Top Secret",
+      "start_date": "2023-01-15"
+    },
+    {
+      "email": "jane.smith@example.com",
+      "job_title": "Sales Manager",
+      "programs": ["Lemons", "Grapes"],
+      "clearance": "CUI",
+      "start_date": "2022-08-01"
+    },
+    {
+      "email": "bob.wilson@example.com",
+      "job_title": "DevOps Engineer",
+      "programs": ["Apples", "Lemons"],
+      "clearance": "Secret",
+      "start_date": "2024-03-20"
+    }
+  ]
+}

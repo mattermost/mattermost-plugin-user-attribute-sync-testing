@@ -39,11 +39,10 @@ export const attributesStatusURL = `${attributesURL}/status`;
 
 // Fixture files.
 //
-// The valid case deliberately reuses the repository's own documented sample file
-// rather than a copy, so the tests keep proving that the file shipped in `data/`
-// is actually uploadable. The invalid cases live in `assets/` because they have
-// no other home.
-export const validAttributesFile = '../data/attributes.json';
+// The valid case is user-only rather than the repository's `data/attributes.json`:
+// that file carries channel and graph fields, which create or skip depending on the
+// server's license tier and feature flags, and the specs assert exact field counts.
+export const validAttributesFile = './assets/attributes.json';
 export const legacyArrayFile = './assets/legacy_array.json';
 export const wrongVersionFile = './assets/wrong_version.json';
 export const malformedFile = './assets/malformed.json';

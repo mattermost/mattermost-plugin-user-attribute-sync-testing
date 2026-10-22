@@ -15,7 +15,7 @@ import {
     apiUploadStoredAttributes,
 } from '../utils';
 
-// data/attributes.json ships with three user records.
+// assets/attributes.json ships with three user records.
 const validRecordCount = 3;
 
 test.describe('attributes upload and download', () => {

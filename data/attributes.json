@@ -45,6 +45,37 @@
         "display_name": "Start Date",
         "type": "date",
         "access_mode": "source_only"
+      },
+      {
+        "name": "org_unit",
+        "display_name": "Org Unit",
+        "type": "graph",
+        "access_mode": "public",
+        "options": [
+          {"name": "Engineering"},
+          {"name": "Platform", "parents": ["Engineering"]},
+          {"name": "Mobile", "parents": ["Engineering"]},
+          {"name": "Sales"},
+          {"name": "Enterprise Sales", "parents": ["Sales"]}
+        ]
+      }
+    ],
+    "channel": [
+      {
+        "name": "clearance",
+        "display_name": "Clearance",
+        "template": "clearance"
+      },
+      {
+        "name": "region",
+        "display_name": "Region",
+        "type": "select",
+        "access_mode": "public",
+        "options": [
+          {"name": "North America"},
+          {"name": "Europe"},
+          {"name": "Asia Pacific"}
+        ]
       }
     ]
   },
@@ -54,21 +85,38 @@
       "job_title": "Software Engineer",
       "programs": ["Apples", "Oranges"],
       "clearance": "Top Secret",
-      "start_date": "2023-01-15"
+      "start_date": "2023-01-15",
+      "org_unit": ["Platform"]
     },
     {
       "email": "jane.smith@example.com",
       "job_title": "Sales Manager",
       "programs": ["Lemons", "Grapes"],
       "clearance": "CUI",
-      "start_date": "2022-08-01"
+      "start_date": "2022-08-01",
+      "org_unit": ["Enterprise Sales"]
     },
     {
       "email": "bob.wilson@example.com",
       "job_title": "DevOps Engineer",
       "programs": ["Apples", "Lemons"],
       "clearance": "Secret",
-      "start_date": "2024-03-20"
+      "start_date": "2024-03-20",
+      "org_unit": ["Platform", "Mobile"]
+    }
+  ],
+  "channels": [
+    {
+      "team": "ad-1",
+      "channel": "town-square",
+      "clearance": "Unclassified",
+      "region": "North America"
+    },
+    {
+      "team": "ad-1",
+      "channel": "off-topic",
+      "clearance": "Secret",
+      "region": "Europe"
     }
   ]
 }

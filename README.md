@@ -10,7 +10,7 @@ This repository is a fork of [mattermost-plugin-user-attribute-sync-starter-temp
 
 ## What it creates
 
-The example file `data/attributes.json` defines four user attributes plus a template — five fields. Edit that file (or upload a different document) to change the set.
+The example file `data/attributes.json` defines a template, five user attributes, and two channel attributes, so one upload exercises every field type the plugin supports. Edit that file (or upload a different document) to change the set.
 
 | Attribute | Type | Access mode | What it exercises |
 |---|---|---|---|
@@ -18,10 +18,15 @@ The example file `data/attributes.json` defines four user attributes plus a temp
 | `programs` | multiselect | `shared_only` | Viewers see only the options they share with the target user |
 | `clearance` | rank | `shared_only` | Ordered levels, so policies can say `is at least` — declared as a template the user attribute links to |
 | `start_date` | date | `source_only` | No one reads it through the API, not even the user themselves |
+| `org_unit` | graph | public | A hierarchy of options; needs the `PropertyFieldGraph` feature flag |
+| `clearance` (channel) | rank | `shared_only` | Linked to the same template as the user attribute, so a policy can compare `user.attributes.clearance` with `resource.attributes.clearance` |
+| `region` (channel) | select | public | A single-value channel attribute |
 
-`clearance` is defined once in `fields.template` and the user attribute carries only a `template` key naming it — see [Link attributes to a template](#link-attributes-to-a-template).
+`clearance` is defined once in `fields.template` and the user and channel attributes carry only a `template` key naming it — see [Link attributes to a template](#link-attributes-to-a-template).
 
 Every attribute this plugin creates is `protected` (not settable in the document — always `true`), which is what makes `source_only` and `shared_only` legal. The example fields use `visibility: always`. `job_title` is public, so everyone can read it — it is still plugin-managed, and still not editable by an admin.
+
+On a server without an Enterprise Advanced license the two channel attributes are skipped, and with the `PropertyFieldGraph` feature flag off `org_unit` is refused; either shows up in the upload summary's skipped-fields count, and the rest of the file still syncs.
 
 The attributes appear in **System Console → User Attributes**, on user profiles, and in the ABAC policy editor.
 
@@ -72,7 +77,7 @@ A JSON document with a `version`, a `fields.user` list, a `users` array, and opt
 }
 ```
 
-`data/attributes.json` in this repository is an example of the format — the four attributes in **What it creates** live there, not in Go. Replace the email addresses with your own test users before uploading it. `version` must be `2` — an older upload in the bare-array format is rejected.
+`data/attributes.json` in this repository is an example of the format — the attributes in **What it creates** live there, not in Go. Replace the email addresses and team name with your own before uploading it. `version` must be `2` — an older upload in the bare-array format is rejected.
 
 The document can also define channel attributes: a `fields.channel` list in the same shape as `fields.user`, and a `channels` array whose records are identified by team name and channel name rather than email:
 
@@ -99,7 +104,7 @@ The document can also define channel attributes: a `fields.channel` list in the 
 }
 ```
 
-Channel fields are `ObjectType=channel` fields in the same `access_control` group, addressable from ABAC as `resource.attributes.<name>` where a user attribute is `user.attributes.<name>`. `team` and `channel` are identity keys — they match the record to a channel and are never written as attribute values. A team/channel pair that resolves to no channel is skipped with a warning, the same as an email matching no user; the rest of the document still syncs. `data/attributes.json` stays user-only so the end-to-end tests can assert exact field counts without depending on the test server's license tier.
+Channel fields are `ObjectType=channel` fields in the same `access_control` group, addressable from ABAC as `resource.attributes.<name>` where a user attribute is `user.attributes.<name>`. `team` and `channel` are identity keys — they match the record to a channel and are never written as attribute values. A team/channel pair that resolves to no channel is skipped with a warning, the same as an email matching no user; the rest of the document still syncs.
 
 The uploaded document is the full list of fields this plugin owns. A field it previously created that the document omits is deleted along with its values when the document is applied. This is per object type: a document that defines `fields.user` but no `fields.channel` deletes the plugin's channel fields, and the reverse. Fields owned by an admin or another plugin are left alone. It is not the full list of values: a user or channel the document does not mention keeps whatever it already has. Values disappear only when their field does.
 
@@ -267,8 +272,6 @@ The rules that bite:
 - An update whose `options` list drops an option that still has an option below it is refused; remove or re-parent the lower option in the same upload.
 
 A field the server refuses is skipped and logged, and the rest of the document still syncs. Options are written inline in the same field write as the definition, so the practical ceiling is the upload size limit — enough for a hand-authored test hierarchy, not the server's 100,000-option scale.
-
-`data/attributes.json` carries no graph field for the same reason it carries no channel field: the end-to-end tests assert exact field counts against it, and a graph field would create or skip depending on whether the test server has the feature flag on.
 
 ### Link attributes to a template
 

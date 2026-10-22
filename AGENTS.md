@@ -80,7 +80,7 @@ The webapp exists only to render the custom `Attributes` setting in the System C
 | `e2e/pages/plugin_settings_page.ts` | The only page object. All locators for the plugin's settings section live here. |
 | `e2e/tests/settings.spec.ts` | The upload panel renders. |
 | `e2e/tests/attributes.spec.ts` | Upload/download/delete round trips, invalid-document rejection, delete-confirmation behaviour, sync summary on upload and reset. |
-| `e2e/assets/` | Deliberately invalid fixtures. The valid fixture is the repo's own `data/attributes.json`. |
+| `e2e/assets/` | Fixtures. `attributes.json` is the valid one: a user-only document, so field-count assertions do not depend on license tier or the graph feature flag. The rest are deliberately invalid. |
 
 ### Build & Config
 
@@ -90,16 +90,19 @@ The webapp exists only to render the custom `Attributes` setting in the System C
 | `Makefile` | Build orchestration (~420 lines). All build/test/deploy commands. |
 | `build/setup.mk` | Extracts PLUGIN_ID, PLUGIN_VERSION, HAS_SERVER, HAS_WEBAPP from plugin.json. |
 | `build/pluginctl/` | Tool for local Mattermost deployment. |
-| `data/attributes.json` | Example attributes document: a `clearance` template in `fields.template`, a linked user field of the same name, three more `fields.user` entries, and sample user records. Channel fields are documented in README.md rather than here, so e2e field-count assertions do not depend on license tier. |
+| `data/attributes.json` | Example attributes document exercising every field type: a `clearance` template, user and channel fields linked to it, four more user fields (including a graph), a select channel field, and sample user and channel records. Not used by the e2e tests, so it can carry fields that skip by license tier or feature flag. |
 
 ## Field Definitions
 
-Come from `fields.template`, `fields.user`, and `fields.channel` in the uploaded document — same field-definition shape on all three lists. `data/attributes.json` is the example user set (same four attributes a test environment typically wants); channel examples live in README.md:
+Come from `fields.template`, `fields.user`, and `fields.channel` in the uploaded document — same field-definition shape on all three lists. `data/attributes.json` is the example set:
 
 1. **Job Title** — `job_title`, Text type, Public access
 2. **Programs** — `programs`, Multiselect type, SharedOnly access, options: Apples/Oranges/Lemons/Grapes
 3. **Clearance** — `clearance`, a Rank template (SharedOnly access, options: Unclassified(1)/CUI(2)/Confidential(3)/Secret(4)/Top Secret(5)) with a linked user field of the same name
 4. **Start Date** — `start_date`, Date type, SourceOnly access
+5. **Org Unit** — `org_unit`, Graph type, Public access, options: Engineering > Platform/Mobile, Sales > Enterprise Sales
+6. **Clearance** (channel) — `clearance`, linked to the same template as the user field
+7. **Region** (channel) — `region`, Select type, Public access, options: North America/Europe/Asia Pacific
 
 A user or channel definition links to a template by carrying a `template` key naming an entry in the same document's `fields.template`. The linked field serves the template's option set, so a user field and a channel field linked to one template share option IDs — which is what lets an ABAC policy compare `user.attributes.<name>` against `resource.attributes.<name>`. On a linked definition `type`, `options`, and `access_mode` are ignored (the server copies them from the template); `visibility` and the `permission_*` keys still apply. Linking is optional — a definition with no `template` key behaves as it always has. Templates hold no values: a template name used as a key in a `users` or `channels` record is an unknown field, skipped with a warning. Name uniqueness is per object type, so a template, a user field, and a channel field may share a name. A `template` key naming a template the document does not define fails that one field — logged, counted in `FieldsSkipped`, rest of the document still syncs.
 
