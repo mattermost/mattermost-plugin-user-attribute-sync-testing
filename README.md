@@ -262,7 +262,7 @@ A graph attribute is a multi-value select whose options form a hierarchy: an obj
 
 A value for it is a list of option names, exactly like a multiselect: `{"email": "a@b.com", "classification": ["Alpha-1"]}`.
 
-The rules that bite:
+How graph fields behave:
 
 - The server's `PropertyFieldGraph` feature flag must be on; a server with it off refuses the field.
 - Option names must be unique within the field — parents are referenced by name, so a name has to identify one option.
@@ -307,7 +307,7 @@ A template is a field definition in a `fields.template` list that user and chann
 }
 ```
 
-The rules that bite:
+How linked fields behave:
 
 - On a definition carrying `template`, `type`, `options`, and `access_mode` are ignored — the server copies all three from the template. `visibility` and the `permission_*` keys still apply as declared.
 - The template and the fields linking to it can go in one upload: templates sync before the fields that link to them.
