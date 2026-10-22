@@ -7,10 +7,14 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
+	"github.com/mattermost/mattermost/server/public/pluginapi/cluster"
 	"github.com/pkg/errors"
 
 	attrsync "github.com/mattermost/mattermost-plugin-user-attribute-sync-testing/server/sync"
 )
+
+// syncLockKey names the cluster mutex behind Plugin.syncLock.
+const syncLockKey = "sync"
 
 // Plugin implements the interface expected by the Mattermost server to communicate between the server and plugin processes.
 type Plugin struct {
@@ -31,8 +35,9 @@ type Plugin struct {
 	// configurationLock synchronizes access to the configuration.
 	configurationLock sync.RWMutex
 
-	// syncLock serializes runSync so two triggers cannot interleave their writes.
-	syncLock sync.Mutex
+	// syncLock serializes activation, upload, and delete across every node in the
+	// cluster, so two triggers cannot interleave their writes.
+	syncLock *cluster.Mutex
 
 	// configuration is the active plugin configuration. Consult getConfiguration and
 	// setConfiguration for usage.
@@ -42,6 +47,12 @@ type Plugin struct {
 // OnActivate is invoked when the plugin is activated. If an error is returned, the plugin will be deactivated.
 func (p *Plugin) OnActivate() error {
 	p.client = pluginapi.NewClient(p.API, p.Driver)
+
+	syncLock, err := cluster.NewMutex(p.API, syncLockKey)
+	if err != nil {
+		return errors.Wrap(err, "failed to create sync lock")
+	}
+	p.syncLock = syncLock
 
 	// Register the HTTP routes that back the System Console upload UI. Do this before anything
 	// that can fail, so the endpoints exist for any request the server routes to us.

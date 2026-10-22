@@ -13,6 +13,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin"
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
+	"github.com/mattermost/mattermost/server/public/pluginapi/cluster"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
@@ -35,10 +36,23 @@ func newTestPlugin(t *testing.T) (*Plugin, *plugintest.API) {
 		MattermostPlugin: plugin.MattermostPlugin{API: api},
 		client:           client,
 		groupID:          "group-id",
+		syncLock:         newTestSyncLock(t, api),
 	}
 	p.initializeAPI()
 
 	return p, api
+}
+
+// newTestSyncLock returns the cluster mutex behind syncLock, with its KV writes
+// mocked to always succeed: a test owns the whole cluster, so the lock is never
+// contended.
+func newTestSyncLock(t *testing.T, api *plugintest.API) *cluster.Mutex {
+	t.Helper()
+
+	api.On("KVSetWithOptions", "mutex_"+syncLockKey, mock.Anything, mock.Anything).Return(true, nil).Maybe()
+	syncLock, err := cluster.NewMutex(api, syncLockKey)
+	require.NoError(t, err)
+	return syncLock
 }
 
 // mockLogs registers permissive expectations for the log methods so tests that

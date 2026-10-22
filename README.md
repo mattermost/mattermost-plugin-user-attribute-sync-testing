@@ -158,7 +158,7 @@ curl -X POST \
 
 ## How syncing works
 
-An upload stores the document and then applies it: fields from `fields.user` and `fields.channel`, then per-user and per-channel values. The HTTP response is the summary the System Console panel shows, so you do not have to read the plugin log to see what happened. Two uploads (or an upload and an activation) cannot interleave — they wait on one lock.
+An upload stores the document and then applies it: fields from `fields.user` and `fields.channel`, then per-user and per-channel values. The HTTP response is the summary the System Console panel shows, so you do not have to read the plugin log to see what happened. Two uploads (or an upload and an activation) cannot interleave — they wait on one lock, shared by every server in a high-availability cluster.
 
 If a document is already stored, activation reapplies it the same way. With no document stored, activation does nothing — it cannot delete fields.
 

@@ -25,8 +25,9 @@ func TestRunSync(t *testing.T) {
 		client := pluginapi.NewClient(api, &plugintest.Driver{})
 
 		return &Plugin{
-			client:  client,
-			groupID: "group-id",
+			client:   client,
+			groupID:  "group-id",
+			syncLock: newTestSyncLock(t, api),
 		}, api
 	}
 
@@ -37,6 +38,17 @@ func TestRunSync(t *testing.T) {
 		_, err := p.runSync()
 
 		require.ErrorIs(t, err, sync.ErrNoStoredDocument)
+	})
+
+	t.Run("takes and releases the cluster sync lock", func(t *testing.T) {
+		p, api := newPlugin(t)
+		api.On("KVGet", sync.AttributesStoreKey).Return(nil, nil).Once()
+
+		_, _ = p.runSync()
+
+		lockKey := "mutex_" + syncLockKey
+		api.AssertCalled(t, "KVSetWithOptions", lockKey, []byte{1}, mock.MatchedBy(func(o model.PluginKVSetOptions) bool { return o.Atomic }))
+		api.AssertCalled(t, "KVSetWithOptions", lockKey, []byte(nil), model.PluginKVSetOptions{})
 	})
 
 	t.Run("a stored document", func(t *testing.T) {

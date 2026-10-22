@@ -27,6 +27,7 @@ func TestOnActivate(t *testing.T) {
 				Driver: &plugintest.Driver{},
 			},
 		}
+		api.On("KVSetWithOptions", "mutex_"+syncLockKey, mock.Anything, mock.Anything).Return(true, nil).Maybe()
 
 		return p, api
 	}
